@@ -1,0 +1,29 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build output for the bundled MCP server
+plugin/mcp/model-dispatch/dist/
+
+# Run outputs. Greenfield/brownfield runs write to ./src and ./.sdlc in
+# whatever directory they were started from.
+/src/
+/.sdlc/
+examples/*/passes/*/
+
+# Generated MCP registration — per-machine, absolute paths + copied API keys.
+.mcp.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

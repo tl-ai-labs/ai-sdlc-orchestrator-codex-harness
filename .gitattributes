@@ -1,0 +1,9 @@
+# Force git to treat all .mjs/.js/.ts source as text. An older revision of
+# plugin/scripts/write-contract-check.mjs contained raw NUL bytes (used as a
+# regex placeholder in matchGlob — since replaced with `\x00` escape
+# sequences), which flipped git's binary heuristic. GitHub's diff view then
+# renders every subsequent revision as "binary" even though the actual content
+# is text. This override restores text diffs.
+*.mjs text diff
+*.js text diff
+*.ts text diff

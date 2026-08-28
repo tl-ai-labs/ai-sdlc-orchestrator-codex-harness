@@ -1,0 +1,9 @@
+AI-SDLC Orchestrator — Codex Harness
+Copyright (c) 2026 Tilicho Labs
+
+Licensed under the MIT License. See LICENSE.
+
+This distribution bundles third-party libraries under
+plugin/mcp/model-dispatch/node_modules/ after setup. Each of those
+libraries carries its own license terms; see their respective LICENSE
+files after `npm install` completes.
