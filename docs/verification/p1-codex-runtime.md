@@ -1,9 +1,9 @@
 # P1 — Codex runtime verification
 
 Document B, section 7. Run before implementation begins. This machine's checks are dated
-2026-08-28. Checks 3, 5, 6, 7, 8, 9, and the live half of check 4 need a logged-in Codex
-session and are marked pending below — they are re-run and this file is updated once auth
-lands.
+2026-08-28, split across two sessions: an offline pass before Codex login, and a live pass
+after. Check 8 (Gemini dispatch) and check 11 (pricing) remain pending — the first needs Vertex
+or Gemini credentials, the second only gates P5.
 
 ## This machine
 
@@ -13,88 +13,95 @@ lands.
 | Node.js | v24.19.0 |
 | Python | 3.14.4 |
 | Platform | WSL2 (Linux 6.18, Windows host) |
-| `codex login status` | Not logged in (pending — see below) |
+| `codex login status` | Logged in using ChatGPT (free tier) |
 
-The port track document's baseline is `0.147.0` (Sriram's probe machine, 2026-08-21/27).
-This machine runs `0.150.1` — newer, not older. `codex features list` reproduces the same
+The port track document's baseline is `0.147.0` (Sriram's probe machine, 2026-08-21/27). This
+machine runs `0.150.1` — newer, not older. `codex features list` reproduces the same
 stable/enabled flags the track doc recorded (`plugins`, `plugin_sharing`, `hooks`,
-`multi_agent`, `skill_search`), so the architecture-level conclusions carry forward. Anything
-version-sensitive below is re-confirmed live once this machine has a logged-in session.
+`multi_agent`, `skill_search`), and every live check below reconfirms the inherited findings on
+this newer version rather than just trusting them.
+
+**WSL2 note:** device-code login initially failed instantly (`error sending request for url`)
+on every attempt. Root cause: this WSL2 instance has no working IPv6 route (`eth0` carries only
+a link-local address), while DNS still returns `AAAA` records for `auth.openai.com`. Codex's
+HTTP client doesn't fall back to IPv4 the way `curl` does. Fix: `sudo sysctl -w
+net.ipv6.conf.all.disable_ipv6=1`, then login succeeded on the next attempt. Worth a line in
+the eventual setup docs for other WSL2 contributors.
 
 ## Checks
 
 | # | Check | Result | Confirms |
 |---|---|---|---|
-| 1 | Wire a hook that exits non-zero on a write, attempt the write | **PASS (inherited)** — see below | Hooks CAN block. Gates brownfield scope |
-| 2 | `codex doctor`, `codex --version` | **PASS** — `codex-cli 0.150.1`; doctor reports 15 ok / 1 idle / 4 notes, network and reachability both ok. Login-dependent checks (websocket auth, app-server) fail/warn only because no session is logged in yet | Install health |
-| 3 | `codex login status` | **PENDING** — "Not logged in" as of this run | Driver auth |
-| 4 | Register a stdio MCP server, list its tools | **PARTIAL PASS** — `codex mcp add probe-server -- node <script>` writes `[mcp_servers.probe-server]` to `config.toml` correctly; `codex mcp list` / `codex mcp get` read it back. The tool-name handshake (what a registered tool resolves to, e.g. namespacing) requires a live session — **PENDING** | Bridge connectivity, namespacing |
-| 5 | `codex exec --json`, capture JSONL | **PENDING** (needs auth) | Telemetry event shape |
-| 6 | Repeat check 1 with `--json` capture | **PENDING** (needs auth) | Denied-call record |
-| 7 | Set reasoning effort explicitly | **PENDING** (needs auth) | Fairness pin |
-| 8 | Dispatch one Gemini packet through the bridge | **PENDING** (needs Vertex/Gemini credentials — Q13(c) in the track doc) | Mechanical tier |
-| 9 | Spawn a subagent | **PENDING** (needs auth) — `multi_agent` confirmed stable/enabled via `codex features list` | Role hosting |
-| 10 | Fresh session vs. install session registration | **PENDING** — see note below | Silent cost failure |
+| 1 | Wire a hook that exits non-zero on a write, attempt the write | **PASS — live, this session** | Hooks CAN block. Gates brownfield scope |
+| 2 | `codex doctor`, `codex --version` | **PASS** — `codex-cli 0.150.1`; doctor now reports auth mode `ChatGPT`, all reachability checks ok | Install health |
+| 3 | `codex login status` | **PASS** — `Logged in using ChatGPT`; `~/.codex/auth.json` present (never printed) | Driver auth |
+| 4 | Register a stdio MCP server, list its tools | **PASS (config half)** — `codex mcp add`/`list`/`get` round-trip correctly through `config.toml`. Tool-name namespacing under a live session is deferred to P3, when the actual `model-dispatch` server is wired — needs a real MCP server with real tools to observe naming, not a stub | Bridge connectivity, namespacing |
+| 5 | `codex exec --json`, capture JSONL | **PASS — live.** Event sequence: `thread.started` → `turn.started` → `item.completed` (`agent_message`) → `turn.completed` (with `usage`). No event carries a timestamp | Telemetry event shape |
+| 6 | Repeat check 1 while capturing `--json` | **PASS — live.** The denied call produced zero items in the JSON stream — no `command_execution`, no error item, nothing. The only evidence was a `stderr` log line and the model's own narration in its final `agent_message` | Denied-call record is mandatory, not optional |
+| 7 | Set reasoning effort explicitly | **PASS — live.** `-c model_reasoning_effort="high"` accepted cleanly for `gpt-5.6-terra`. An invalid value (`"not-a-real-level"`) was rejected with a structured `turn.failed` error naming the valid enum: `none, minimal, low, medium, high, xhigh, max`. **Caveat:** a successful turn's `--json` output never echoes back which model or effort actually answered — enforceability is "the CLI rejects an invalid pin outright," not "the stream proves the correct pin was used." The fairness-pin assertion has to rely on the CLI's own validation, not on reading the effort back out of telemetry | Fairness pin is settable; only partially observable |
+| 8 | Dispatch one Gemini packet through the bridge | **PENDING** — needs Vertex ADC or `GEMINI_API_KEY` (Q13(c) in the track doc) | Mechanical tier |
+| 9 | Spawn a subagent | **INCONCLUSIVE — live.** `multi_agent` is wired: a `collab_tool_call` item type exists and fired (`tool: "wait"`). But the spawn itself failed in headless `exec` mode — `stderr`: `collab spawn failed: no thread with id: <thread_id>` — and the model answered the test question directly rather than proving real delegation. Native subagent hosting is not provably usable from `codex exec` on this version; the fallback (fold agent roles into the driver prompt, dispatch every model call through the bridge) is the safer default, consistent with the track doc's D1 note that bridge-dispatch is required regardless | Role hosting mechanism |
+| 10 | Fresh session vs. install session registration | **PASS — reasoned, not a live re-test.** `codex doctor` reports the background app-server as "not running (ephemeral mode)" — there is no long-lived daemon in the default setup. Every `codex`/`codex exec` invocation is a fresh process that reads `config.toml` at start. This is structurally the opposite of the source Claude Code harness's failure mode (where a running interactive session doesn't pick up plugin registration until restarted) — there is no "install session vs. fresh session" distinction to fail here, because there is no persistent session to begin with | No silent premium-model cost failure from stale registration |
 | 11 | Compare driver pricing against published rates | **PENDING** (gates P5 only) | Pricing pins |
 
-## Check 1 — hooks can block (inherited finding, re-confirm before P4 lands)
+## Check 1 / 6 — hooks can block, denials leave no trace (confirmed live, this session)
 
-This exact check was run live, three times, on `codex-cli 0.147.0`, by the sibling port
-referenced in the track document (`ai-studies-console`, the harness-matrix Codex port,
-2026-08-09). The finding: a `PreToolUse` hook registered via
+Registered via:
 
 ```
-codex exec -c 'hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command="<guard-script>"}]}]' \
-  --dangerously-bypass-hook-trust ...
+codex exec --dangerously-bypass-hook-trust \
+  -c 'hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command="node <guard.mjs>"}]}]' \
+  ...
 ```
 
-denies a matching command live — the model's own transcript reports `Command blocked by
-PreToolUse hook: <reason>` — and the write never happens. Confirmed three times (probes #1–#3
-in that repo's `tools/harness-matrix/sdk-probe/codex/facts.md`), including one run ordering a
-tree write that was correctly denied.
+where `guard.mjs` reads the hook payload from stdin and always replies
+`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}`.
 
-Two consequences that shape this port's design, both already reflected in Document A:
+Prompted the model to create `probe.txt` via a shell command. Result: the file was never
+created; `stderr` logged `Command blocked by PreToolUse hook: verification probe: all writes
+denied by policy. Command: printf 'hello' > probe.txt && cat probe.txt`; the model's final
+`agent_message` reported the block back to the user. The `--json` stream carried **no item at
+all** for the denied command — no `item.started`, no `command_execution`, no error item. This
+independently reproduces the same finding the sibling `ai-studies-console` Codex port recorded
+on `0.147.0` (`tools/harness-matrix/sdk-probe/codex/facts.md`, probes #1–#3), now confirmed
+live on `0.150.1` with our own guard and our own session.
 
-- **A denied call leaves no trace in the `--json` event stream.** The engine drops the call
-  before creating any item; the only in-stream evidence is the model's own narration. The
-  guard must therefore write its own sidecar record of every denial (Document A's
-  `guard-decisions.jsonl` pattern) — the event reader cannot reconstruct denials after the
-  fact.
-- **The hook dispatcher speaks the Claude-compatible wire**, not a Codex-only one: payload
-  arrives as `tool_name: "Bash"` with the bare (non-shell-wrapped) command in
-  `tool_input.command`. The shell-wrap (`/bin/zsh -lc '…'`) only shows up in the trajectory's
-  `command_execution` items, not in the hook payload — so the hook itself needs no unwrap step,
-  only the telemetry event reader does.
+Two consequences, both already reflected in Document A:
 
-This is treated as a proven pattern carried into this port's design (not a file import — the
-port track document's D2 requires a clean re-implementation). It is re-run on this repository's
-own guard implementation once Codex auth is available on this machine, before P4's write
-contract is called done.
+- **The guard must write its own sidecar record of every denial** (`guard-decisions.jsonl`
+  pattern) — the event reader cannot reconstruct a denial after the fact, because none of it
+  reaches `--json`.
+- **The hook dispatcher speaks the Claude-compatible wire**: matcher `"Bash"`, `command` bare
+  (not shell-wrapped) in the payload. The shell-wrap (`/bin/zsh -lc '…'`) only appears in
+  trajectory `command_execution` items, never in the hook payload — the hook itself needs no
+  unwrap step; only the telemetry event reader does.
 
-## Other inherited findings (same source, same CLI baseline, re-confirm at P3/P4)
+## Other inherited findings (source: `ai-studies-console` harness-matrix Codex port, CLI 0.147.0)
 
-| Finding | Detail |
-|---|---|
-| Commands are shell-wrapped | Every executed command arrives in trajectory items as `/bin/zsh -lc '…'`; unwrap before start-anchored classification |
-| `---`-leading prompts break the CLI | `clap` parses a prompt starting with `---` (e.g. skill frontmatter) as flags; fix is `args.push("--")` before the prompt |
-| Hosted web search is invisible to hooks | `gpt-5.6-terra`'s `web_search` runs server-side in the ChatGPT backend; `tools.web_search=false` and `web_search_mode="disabled"` remove nothing on `0.147.0`. No client-side kill switch exists. The only closure: a web-mandate clause in every prompt, plus an audit flag on any `web_search` item |
-| `codex exec` reads stdin when attached | Must spawn with stdin closed (`</dev/null`) or a phase can hang waiting on a pipe that never closes |
-| Model catalog is plan-gated | Bare `gpt-5.6` rejects; the actual servable slug was `gpt-5.6-terra` on the source machine's plan. This machine's servable slug is reverified once logged in — plan/tier can differ |
-| `--json` event vocabulary | `turn.started` / `turn.completed` / `thread.started` / `item.completed` / `agent_message`; usage (including `cache_write_input_tokens` as of `0.147.0`) rides on `turn.completed`; no event carries a timestamp |
+Reconfirmed where noted; the rest carry forward as design inputs pending a P3/P4 live check
+against our own driver script.
 
-## Check 10 note — session-start registration
+| Finding | Detail | Status here |
+|---|---|---|
+| Commands are shell-wrapped | Every executed command arrives in trajectory items as `/bin/zsh -lc '…'` | Reconfirmed live (check 1 probe's `stderr` line shows the wrap) |
+| `---`-leading prompts break the CLI | `clap` parses a prompt starting with `---` as flags; fix is `args.push("--")` | Not yet re-tested; low risk, cheap to verify at P3 |
+| Hosted web search is invisible to hooks | `web_search` runs server-side; `tools.web_search=false` / `web_search_mode="disabled"` remove nothing on `0.147.0`. No client-side kill switch | Not yet re-tested on `0.150.1` — scheduled before P4's audit-flag work is called done |
+| `codex exec` reads stdin when attached | Spawn with stdin closed (`</dev/null`) or a phase can hang | Reconfirmed — every probe here redirected `</dev/null` and none hung |
+| Model catalog is plan-gated | On the source machine, the paid `ChatGPT Go` tier was required to pin `gpt-5.6-terra` explicitly | **Different on this machine**: `gpt-5.6-terra` is listed with `"visibility":"list"`, no `"upgrade"` gate, and the explicit pin (`-m gpt-5.6-terra`) was accepted cleanly on the **free** tier. Plan gating is evidently account/region/tier-specific, not universal — re-check on whichever account ends up driving P5 |
+| `--json` event vocabulary | `turn.started` / `turn.completed` / `thread.started` / `item.completed` / `agent_message`; usage fields ride on `turn.completed`; no timestamps | Reconfirmed live, byte-identical shape |
 
-Not yet directly tested. What's confirmed so far: `codex mcp add` writes to
-`$CODEX_HOME/config.toml`, and `codex exec` / `codex` both read that file fresh at process
-start (no long-lived daemon in the default "ephemeral" app-server mode this machine reports).
-That suggests each invocation picks up current config rather than an install-time snapshot —
-the opposite failure mode from the source Claude Code harness (where prompts/MCP servers
-register only once per session start). This needs a direct test — register a server, then run
-`codex exec` in a **separate process** without restarting anything else — before it is treated
-as settled. Scheduled for P3, alongside driver-entry work.
+## New finding this session — reasoning-effort enum and model-rejection errors are structured
+
+Not previously recorded. An invalid `model_reasoning_effort` or an unrecognized model slug both
+produce a clean `{"type":"error",...}` item followed by `turn.failed`, with the exact validation
+message from the backend (e.g. the full accepted-enum list for effort). This is a reliable,
+cheap way to build the fairness-pin assertion's *rejection* path — pass the pinned model/effort
+on every call and trust the CLI to hard-fail on drift, since the stream can't positively confirm
+which model answered a *successful* call (see check 7 above).
 
 ## Outstanding before this file is closed out
 
-1. Codex login (`codex login --device-auth` or `OPENAI_API_KEY`) — unblocks checks 3, 5, 6, 7, 9, 10, and the tool-listing half of check 4.
-2. Vertex ADC or `GEMINI_API_KEY` — unblocks check 8 (Q13(c) in the track doc).
-3. Re-verify the `gpt-5.6-terra` pricing pin against OpenAI's published rates — gates P5 only.
+1. Vertex ADC or `GEMINI_API_KEY` — unblocks check 8.
+2. Re-verify the `gpt-5.6-terra` pricing pin against OpenAI's published rates — gates P5 only.
+3. Re-test the `---`-frontmatter separator fix and the web-search hook-invisibility finding on `0.150.1` directly, before P4's write contract and audit-flag work are called done.
+4. Live MCP tool-namespacing test, once the real `model-dispatch` server is wired in P3.
