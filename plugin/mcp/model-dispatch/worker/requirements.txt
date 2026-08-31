@@ -1,0 +1,18 @@
+# Python dependencies for gemini_worker.py — the agent behind the
+# `antigravity-worker` adapter. Installed into a dedicated virtualenv by
+# verify-setup.mjs --enable-agent.
+
+# Floor, not exact pin: the worker records `sdk_version` in every usage sidecar,
+# so a newer SDK is visible in the evidence.
+google-antigravity>=0.1.7
+
+# Requires Python >= 3.10. macOS ships /usr/bin/python3 as 3.9;
+# verify-setup.mjs resolves an explicit >= 3.10 interpreter by version-suffixed
+# name (python3.13, python3.12, ...) rather than trusting bare `python3`.
+#
+# Homebrew wrinkle: some Homebrew Python builds link `pyexpat` against a
+# libexpat that is not installed. If `import google.antigravity` fails with an
+# expat error:
+#
+#   brew install expat
+#   export DYLD_LIBRARY_PATH=/opt/homebrew/opt/expat/lib

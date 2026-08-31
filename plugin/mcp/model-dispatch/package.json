@@ -1,0 +1,33 @@
+{
+  "name": "@mmo/model-dispatch",
+  "version": "0.1.0",
+  "description": "MCP server adapter for Gemini 3.5 Flash + policy-driven multi-model routing",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "model-dispatch": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc --watch",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@google/genai": "^2.15.0",
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "dotenv": "^16.4.7",
+    "openai": "^4.104.0",
+    "undici": "^8.5.0",
+    "yaml": "^2.9.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

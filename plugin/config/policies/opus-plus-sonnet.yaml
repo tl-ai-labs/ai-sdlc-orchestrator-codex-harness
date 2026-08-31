@@ -1,0 +1,101 @@
+# Multi-model — Opus 5 for judgment phases, Sonnet 5 for mechanical.
+# Both models reached via the builtin-anthropic adapter (Anthropic REST API);
+# single mechanical door, no `select:` block needed.
+version: 1
+name: opus-plus-sonnet
+
+models:
+  - id: opus
+    adapter: builtin-anthropic
+    model_name: claude-opus-5
+    # TODO(pricing): confirm Opus 5 list rates from platform.claude.com/docs
+    # before shipping. Values carried over from opus-only.yaml as placeholder.
+    pricing: { input: 5.00, input_cached: 0.50, output: 25.00 }
+    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
+    pricing_last_verified: 2026-08-19
+    auth: { env: ANTHROPIC_API_KEY }
+    max_output_tokens_absolute: 32000
+
+  - id: sonnet
+    adapter: builtin-anthropic
+    model_name: claude-sonnet-5
+    # TODO(pricing): confirm Sonnet 5 list rates from platform.claude.com/docs
+    # before shipping. Values below are plausible Sonnet-tier placeholders —
+    # historically Sonnet has been ~$3 / $15 per 1M input / output tokens.
+    pricing: { input: 3.00, input_cached: 0.30, output: 15.00 }
+    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
+    pricing_last_verified: 2026-08-19
+    auth: { env: ANTHROPIC_API_KEY }
+    max_output_tokens_absolute: 16000
+
+rules:
+  - when: { phase: requirements_analysis }
+    use: opus
+    reason: "Judgment-heavy, low volume"
+  - when: { phase: architecture_design }
+    use: opus
+    reason: "Foundational, decision-bearing"
+  - when: { phase: plan_task_packets }
+    use: opus
+    reason: "Needs full context to slice work cleanly"
+  - when: { phase: senior_code_review }
+    use: opus
+    reason: "Cross-file reasoning + judgment"
+  - when: { phase: security_review }
+    use: opus
+    reason: "Risk-bearing, low volume"
+
+  # Brownfield-mode phases — both premium. A wrong stack detection cascades
+  # into every downstream packet; change-plan is the brownfield equivalent
+  # of architecture_design.
+  - when: { phase: discovery }
+    use: opus
+    reason: "Judgment: understanding an unknown repo is high-stakes"
+  - when: { phase: change_plan }
+    use: opus
+    reason: "Judgment: delta design for feature-extend / refactor / deps"
+
+  # Mechanical tier — Sonnet 5 handles the schema-driven codegen types plus
+  # the broader test/docs/debug work.
+  - when:
+      phase: codegen
+      task_type:
+        - controller_handler
+        - service_method
+        - dto
+        - module_wiring
+        - migration
+        - seed_data
+        - entity
+        - guard
+        - interceptor
+        - filter
+        - react_component
+        - react_page
+        - api_client
+        - frontend_util
+        - frontend_config
+        - frontend_html
+    use: sonnet
+    reason: "Schema-driven boilerplate — Sonnet 5 handles well at lower cost"
+  - when: { phase: tests }
+    use: sonnet
+    reason: "Scaffold-heavy, pattern-based"
+  - when: { phase: docs }
+    use: sonnet
+    reason: "Volume work"
+
+  # Escalate to Opus after 2 mechanical-tier retries.
+  - when: { phase: debug, retry_count: { gte: 2 } }
+    use: opus
+    reason: "Escalation: 2 mechanical-tier attempts failed"
+  - when: { phase: debug }
+    use: sonnet
+    reason: "Most debugs have clear cause"
+
+  - default: opus
+    reason: "Unrecognized task — fail safe to premium"
+
+# Hard per-run cost cap. When accumulated cost_usd exceeds this, the
+# orchestrator aborts. Prevents runaway spend on an unexpectedly large repo.
+hard_cost_cap_usd: 50

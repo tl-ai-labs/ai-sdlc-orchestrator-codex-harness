@@ -1,0 +1,78 @@
+# Flash-only floor — every dispatched task (judgment AND mechanical) routes to
+# Gemini 3.7 Flash via the Antigravity SDK agent adapter.
+#
+# IMPORTANT: the orchestrator subagent's OWN turns (planning, tool-calling,
+# Gate answers) still run on whatever model the Claude Code session is on —
+# subagents in this harness are Claude, unavoidably. Only the dispatched
+# `execute_with_model` calls this policy governs actually route to Flash.
+# The manifest.model_breakdown will still show a Claude row for the
+# orchestrator's session turns; that is expected and correct.
+version: 1
+name: flash-agsdk-only
+
+models:
+  - id: flash
+    adapter: antigravity-worker
+    model_name: gemini-3.7-flash
+    display_name: gemini-3.7-flash (Antigravity agent)
+    # TODO(pricing): confirm Gemini 3.7 Flash rates. Values below carried over
+    # from gemini-3.5-flash as a placeholder. Vertex adds +10% on REGIONAL
+    # endpoints; the geminiTransports.ts::applyVertexSurcharge applies it at
+    # dispatch — do not hand-edit x1.10 in.
+    pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
+    pricing_last_verified: 2026-08-19
+    # `region:` unpinned so this leaf follows GOOGLE_CLOUD_LOCATION and hits
+    # the flat global endpoint by default. Vertex-only: the Antigravity SDK is
+    # ADC-only and has no API-key door, so no `auth:` block.
+    worker_timeout_sec: 540
+    # No max_output_tokens_absolute — agent sessions manage their own per-turn
+    # limits.
+
+rules:
+  # Every phase → flash. Explicit rules per phase (not just a default) so
+  # telemetry rollups show the routing decision was intentional per-phase.
+  - when: { phase: requirements_analysis }
+    use: flash
+    reason: "Floor tier: judgment routed to Flash agent"
+  - when: { phase: architecture_design }
+    use: flash
+    reason: "Floor tier: judgment routed to Flash agent"
+  - when: { phase: plan_task_packets }
+    use: flash
+    reason: "Floor tier: judgment routed to Flash agent"
+  - when: { phase: senior_code_review }
+    use: flash
+    reason: "Floor tier: judgment routed to Flash agent"
+  - when: { phase: security_review }
+    use: flash
+    reason: "Floor tier: judgment routed to Flash agent"
+
+  # Brownfield-mode phases.
+  - when: { phase: discovery }
+    use: flash
+    reason: "Floor tier: brownfield discovery routed to Flash agent"
+  - when: { phase: change_plan }
+    use: flash
+    reason: "Floor tier: brownfield change plan routed to Flash agent"
+
+  # Mechanical tier.
+  - when: { phase: codegen }
+    use: flash
+    reason: "Mechanical tier — all codegen task types"
+  - when: { phase: tests }
+    use: flash
+    reason: "Mechanical tier"
+  - when: { phase: docs }
+    use: flash
+    reason: "Mechanical tier"
+  - when: { phase: debug }
+    use: flash
+    reason: "Mechanical tier — no escalation; this policy is the floor"
+
+  - default: flash
+    reason: "Single-model floor policy"
+
+# Hard per-run cost cap. Flash is cheap per token but the AG-SDK agent can
+# burn tokens on long sessions — keep the cap on.
+hard_cost_cap_usd: 50

@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "intents": [
+    {
+      "id": "docs",
+      "title": "Docs",
+      "example": "write API docs, README, ADRs, docstrings for the auth module",
+      "argument_hint": "[what to document, in one line]",
+      "summary": "Write or update documentation — API docs, README, ADRs, or docstrings.",
+      "interview": [
+        "What should get documented — a specific module, endpoint, or the whole repo?",
+        "Who's the audience — other engineers, API consumers, or both?",
+        "Any existing docs to update rather than write fresh, or a format/style to match?"
+      ],
+      "task_types": [
+        { "id": "doc_update", "label": "Update an existing doc" },
+        { "id": "doc_addition", "label": "Write a new doc" }
+      ]
+    },
+    {
+      "id": "bugfix",
+      "title": "Bug fix",
+      "example": "fix the /login endpoint returning 500 on missing password",
+      "argument_hint": "[the bug, in one line]",
+      "summary": "Reproduce a specific defect, diagnose it, fix it, add a regression test.",
+      "interview": [
+        "Describe the bug in one sentence — the observed behavior.",
+        "What is the expected behavior instead?",
+        "Any files you already know are involved? (I'll grep otherwise)",
+        "How will we know it's fixed?"
+      ]
+    },
+    {
+      "id": "feature-extend",
+      "title": "Feature — extend",
+      "example": "add a ?filter param to the existing /users endpoint",
+      "argument_hint": "[the capability to add, in one line]",
+      "summary": "Add a capability to an existing endpoint or module.",
+      "interview": [
+        "Which existing endpoint or module are we extending?",
+        "What's the new capability, in one sentence?",
+        "Any constraints — backward compatibility, existing callers not to break?"
+      ]
+    },
+    {
+      "id": "feature-new",
+      "title": "Feature — new",
+      "example": "add a webhooks module (endpoint, storage, retry loop)",
+      "argument_hint": "[the subsystem to add, in one line]",
+      "summary": "Design and add a new subsystem — endpoint, storage, and tests together.",
+      "interview": [
+        "What's the new subsystem, in one sentence — what does it do?",
+        "What does it need — storage, an endpoint, background jobs, retries?",
+        "How should it be tested — unit only, or an integration path too?"
+      ]
+    },
+    {
+      "id": "refactor",
+      "title": "Refactor",
+      "example": "extract shared date logic into a util module and update all call sites",
+      "argument_hint": "[what to refactor, in one line]",
+      "summary": "Extract shared logic and update call sites, verified by the full test suite.",
+      "interview": [
+        "What are we refactoring, and where does the duplication or mess live?",
+        "What must the behavior guarantee stay identical afterward?",
+        "Any call sites you already know will need updating?"
+      ]
+    },
+    {
+      "id": "test",
+      "title": "Test backfill",
+      "example": "backfill unit tests for src/payments to reach 80% line coverage",
+      "argument_hint": "[what to backfill coverage for, in one line]",
+      "summary": "Backfill test coverage toward a stated target.",
+      "interview": [
+        "Which module or path needs test coverage?",
+        "What's the target — a coverage percentage, specific untested branches, or both?",
+        "Any existing test patterns or conventions in this repo to follow?"
+      ]
+    },
+    {
+      "id": "deps",
+      "title": "Dependency upgrade",
+      "example": "upgrade jest 28 → 29 (and adapt breaking changes)",
+      "argument_hint": "[the dependency + target version, in one line]",
+      "summary": "Upgrade a dependency and patch the breaking-change fallout it causes.",
+      "interview": [
+        "Which dependency, and from what version to what version?",
+        "Any breaking changes you already know about from the changelog?",
+        "Anything explicitly out of scope — other dependencies not to touch this run?"
+      ]
+    }
+  ]
+}
