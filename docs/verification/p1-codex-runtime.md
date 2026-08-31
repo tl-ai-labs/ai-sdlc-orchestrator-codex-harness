@@ -221,6 +221,55 @@ Two consequences, both already reflected in Document A:
   trajectory `command_execution` items, never in the hook payload — the hook itself needs no
   unwrap step; only the telemetry event reader does.
 
+## Check 1/6 follow-up — `apply_patch` is a SEPARATE matcher with a DIFFERENT payload shape (2026-08-31)
+
+While building the write-contract hook for P3, checked whether the guard above actually covers
+the model's native file-editing tool, not just Bash. On `0.151.0` the model's default behavior
+for creating/editing a file is a `file_change` item backed by an `apply_patch` tool call, not a
+Bash shell redirect — and the model outright refuses a shell-based write when told its
+"workspace rules require file edits via the patch mechanism." A hook registered only on
+`matcher="Bash"` never sees this at all, so a write-contract guard written for Bash alone would
+provide close to no real coverage against ordinary model behavior.
+
+**A first attempt appeared to show `apply_patch` bypasses PreToolUse hooks entirely** — six
+different matcher-name guesses, all silent. That result was **wrong, and the cause was a bug in
+the disposable test hook script**, not codex: it called `require("fs")` inside a `.mjs` file,
+which throws immediately in native ESM (`require` is undefined), so the script died before
+writing anything or replying — codex correctly fail-opened on a broken hook, and the "did the
+sidecar file appear" check naturally read false. Recorded here because it is exactly the kind of
+wrong conclusion the "test it, don't assume" instruction exists to catch, including catching
+one's own tooling bugs before writing them up as a runtime finding.
+
+**With the bug fixed, `matcher="apply_patch"` fires correctly** and a `deny` decision genuinely
+blocks the write (file never created; same no-trace-in-`--json` behavior as the Bash case,
+confirmed again here). The payload shape is real and different from Claude's:
+
+```json
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Add File: probe5.txt\n+hello\n*** End Patch"
+  },
+  "cwd": "/tmp/hook-test-ws",
+  "model": "gpt-5.6-terra",
+  "permission_mode": "bypassPermissions"
+}
+```
+
+There is no `tool_input.file_path` or `tool_input.path` field at all — the target path (or
+paths; a single patch can carry `*** Add File:` / `*** Update File:` / `*** Delete File:` /
+`*** Move to:` blocks for more than one file) is embedded inside `tool_input.command` as OpenAI's
+apply_patch patch-format text. The source's `write-contract-check.mjs` extracts its target from
+a structured `file_path` field — that extraction logic does not fire on this shape at all and
+needs a real rebuild (parse the patch-format headers), not just a port of the matcher name.
+
+**Consequence for the port:** the codex write-contract hook registers on **both** `Bash` and
+`apply_patch` matchers, with two different target-extraction paths — a shell-redirect scan for
+`Bash`, a patch-header parse for `apply_patch` — feeding the same allowlist/off-limits decision
+logic. Missing either matcher leaves a real gap in brownfield's core safety guarantee, not a
+cosmetic one.
+
 ## Other inherited findings (source: `ai-studies-console` harness-matrix Codex port, CLI 0.147.0)
 
 Reconfirmed where noted; the rest carry forward as design inputs pending a P3/P4 live check
