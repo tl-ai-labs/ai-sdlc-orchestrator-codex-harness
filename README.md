@@ -9,11 +9,20 @@ This repository is under active construction. It tracks the source repository's 
 | Phase | Work | Status |
 |---|---|---|
 | P1′ | Codex runtime verification, model/effort pin selection | Done — [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md) |
-| P2 | Repository skeleton, carried engine and support scripts | In progress |
-| P3 | OpenAI adapter, Codex policy, driver entry, write-contract enforcement | Not started |
-| P4 | Telemetry reader, denied-call sidecar, setup/verification rebuild, plugin packaging | Not started |
+| P2 | Repository skeleton, carried engine and support scripts | Done |
+| P3 | OpenAI adapter, Codex policy, driver-bridge client, write-contract enforcement | Done |
+| P4 | Telemetry reader, denied-call sidecar, fairness-pin assertion, setup/verification rebuild, plugin packaging, remaining test suites | In progress |
 | P5 | Quick-demo run end to end | Not started (paid) |
 | P6 | Full Workforce Ops reference run, walkthrough, console study | Not started (paid) |
+
+P3 landed with two significant design changes from the original port plan, both verified live
+and documented in full: a model inside `codex exec` cannot call the bridge's MCP tools directly
+(no per-tool function binding exists), so the codex driver calls the bridge itself as a Node MCP
+client instead of relying on model function-calling; and the write-contract hook now covers both
+`codex`'s native `apply_patch` tool and `Bash`, since the model defaults to the former and a
+Bash-only guard would miss almost all real writes. See
+[docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md) for the full
+findings.
 
 ## Model cast
 
