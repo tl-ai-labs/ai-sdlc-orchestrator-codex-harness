@@ -78,8 +78,17 @@ const ADAPTER_LABEL = {
 
 const GEMINI_TIERS = ["off", "minimal", "low", "medium", "high"];
 const ANTHROPIC_EFFORT_TIERS = ["off", "low", "medium", "high", "xhigh", "max"];
-const SHIPPED_PRESETS = ["opus-only", "opus-plus-flash"];
+const SHIPPED_PRESETS = ["gpt-plus-flash", "opus-only", "opus-plus-flash"];
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+// This harness ships no Anthropic credential (D9 — no Claude anywhere in the
+// official cast). A policy naming either Anthropic adapter is carried as a
+// compiled-and-tested replay fixture, not something to offer here — it would
+// fail at first dispatch with no ANTHROPIC_API_KEY to find.
+const ANTHROPIC_ONLY_ADAPTERS = new Set(["builtin-anthropic", "claude-cli"]);
+function usesAnthropicAdapter(policy) {
+  return (policy.models ?? []).some((m) => ANTHROPIC_ONLY_ADAPTERS.has(m.adapter));
+}
 
 function thinkingSupport(model) {
   if (model.adapter === "mcp:model-dispatch" || model.adapter === "antigravity-worker") return GEMINI_TIERS;
@@ -99,6 +108,8 @@ function listPolicyIds() {
     .filter((f) => f.endsWith(".yaml"))
     .map((f) => f.replace(/\.yaml$/, ""))
     .sort((a, b) => {
+      if (a === "gpt-plus-flash") return -1;
+      if (b === "gpt-plus-flash") return 1;
       if (a === "opus-only") return -1;
       if (b === "opus-only") return 1;
       if (a === "opus-plus-flash") return -1;
@@ -253,11 +264,14 @@ function summarizePolicy(id, policy, headerComment) {
 }
 
 function loadAllPolicySummaries() {
-  return listPolicyIds().map((id) => {
-    const raw = readPolicyRaw(id);
-    const policy = parseYaml(raw);
-    return summarizePolicy(id, policy, extractHeaderComment(raw));
-  });
+  return listPolicyIds()
+    .map((id) => {
+      const raw = readPolicyRaw(id);
+      const policy = parseYaml(raw);
+      return { id, policy, raw };
+    })
+    .filter(({ policy }) => !usesAnthropicAdapter(policy))
+    .map(({ id, policy, raw }) => summarizePolicy(id, policy, extractHeaderComment(raw)));
 }
 
 // ── build (mirrors lib/buildPolicy.ts) ────────────────────────────────

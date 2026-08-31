@@ -42,7 +42,7 @@ setup docs either way.
 | 1 | Wire a hook that exits non-zero on a write, attempt the write | **PASS — live, this session** | Hooks CAN block. Gates brownfield scope |
 | 2 | `codex doctor`, `codex --version` | **PASS** — `codex-cli 0.151.0` as of 2026-08-31 (was `0.150.1`); doctor reports auth mode `ChatGPT`, git/repo detection, terminal, and search all ok. Two doctor *notes* (not failures): the running npx package root differs from the npm global package root, which only affects `codex update`'s target, not runtime behaviour | Install health |
 | 3 | `codex login status` | **PASS** — `Logged in using ChatGPT`; `~/.codex/auth.json` present (never printed) | Driver auth |
-| 4 | Register a stdio MCP server, list its tools | **PASS (config half)** — `codex mcp add`/`list`/`get` round-trip correctly through `config.toml`. Tool-name namespacing under a live session is deferred to P3, when the actual `model-dispatch` server is wired — needs a real MCP server with real tools to observe naming, not a stub | Bridge connectivity, namespacing |
+| 4 | Register a stdio MCP server, list its tools | **FAIL — live, 2026-08-31, against the real `model-dispatch` server.** See the dedicated section below. Config-side registration works; the model cannot see or call the server's tools in a plain `codex exec` session | Bridge connectivity, namespacing — **this is the P3 blocker, not a P3 nicety** |
 | 5 | `codex exec --json`, capture JSONL | **PASS — live.** Event sequence: `thread.started` → `turn.started` → `item.completed` (`agent_message`) → `turn.completed` (with `usage`). No event carries a timestamp | Telemetry event shape |
 | 6 | Repeat check 1 while capturing `--json` | **PASS — live.** The denied call produced zero items in the JSON stream — no `command_execution`, no error item, nothing. The only evidence was a `stderr` log line and the model's own narration in its final `agent_message` | Denied-call record is mandatory, not optional |
 | 7 | Set reasoning effort explicitly | **PASS — live.** `-c model_reasoning_effort="high"` accepted cleanly for `gpt-5.6-terra`. An invalid value (`"not-a-real-level"`) was rejected with a structured `turn.failed` error naming the valid enum: `none, minimal, low, medium, high, xhigh, max`. **Caveat:** a successful turn's `--json` output never echoes back which model or effort actually answered — enforceability is "the CLI rejects an invalid pin outright," not "the stream proves the correct pin was used." The fairness-pin assertion has to rely on the CLI's own validation, not on reading the effort back out of telemetry | Fairness pin is settable; only partially observable |
@@ -50,6 +50,85 @@ setup docs either way.
 | 9 | Spawn a subagent | **INCONCLUSIVE — live.** `multi_agent` is wired: a `collab_tool_call` item type exists and fired (`tool: "wait"`). But the spawn itself failed in headless `exec` mode — `stderr`: `collab spawn failed: no thread with id: <thread_id>` — and the model answered the test question directly rather than proving real delegation. Native subagent hosting is not provably usable from `codex exec` on this version; the fallback (fold agent roles into the driver prompt, dispatch every model call through the bridge) is the safer default, consistent with the track doc's D1 note that bridge-dispatch is required regardless | Role hosting mechanism |
 | 10 | Fresh session vs. install session registration | **PASS — reasoned, not a live re-test.** `codex doctor` reports the background app-server as "not running (ephemeral mode)" — there is no long-lived daemon in the default setup. Every `codex`/`codex exec` invocation is a fresh process that reads `config.toml` at start. This is structurally the opposite of the source Claude Code harness's failure mode (where a running interactive session doesn't pick up plugin registration until restarted) — there is no "install session vs. fresh session" distinction to fail here, because there is no persistent session to begin with | No silent premium-model cost failure from stale registration |
 | 11 | Compare driver pricing against published rates | **PENDING** (gates P5 only) | Pricing pins |
+
+## Check 4 — MCP tools registered via `config.toml` are NOT reachable from `codex exec` on 0.151.0 (CRITICAL, 2026-08-31)
+
+This blocks Document A P3's exit criterion ("bridge reachable from Codex") and calls into
+question Document B section 3's "Required" listing for `MCP servers via config.toml`. Recorded
+in full because it contradicts what both documents assume, per the standing instruction not to
+assume unverified Codex behavior.
+
+**Setup.** Built `plugin/mcp/model-dispatch` (real server, not a stub) and registered it exactly
+as Document B section 4 specifies:
+
+```
+codex mcp add model-dispatch -- node <repo>/plugin/mcp/model-dispatch/dist/server.js
+```
+
+`codex mcp list` / `codex mcp get model-dispatch` confirm the registration and `config.toml`
+correctly gained `[mcp_servers.model-dispatch]`. Running the server binary directly
+(`node dist/server.js`) hangs cleanly on stdin with no startup error — the server itself is
+healthy.
+
+**What happened when a live turn tried to use it.** Five independent probes, all on
+`codex-cli 0.151.0`, same session, same registration:
+
+1. Asked the model to call `load_policy` from `model-dispatch` directly. It never attempted the
+   tool — it answered by `rg`/`sed`-reading the policy YAML from the filesystem instead (a
+   cheaper path for that question, so inconclusive on its own).
+2. Told it to use its "tool-search capability" to discover the server's tools first, then call
+   `load_policy`. Same filesystem-read fallback — inconclusive on its own.
+3. Forbade shell commands and file reads, required an MCP tool call or an explicit admission.
+   Result: **`NO_MCP_TOOL_AVAILABLE`**.
+4. Asked the model to introspect its own function schema verbatim (no filesystem access).
+   Result: only `functions.wait`, `functions.exec`, `collaboration.*`, and, callable from inside
+   `functions.exec`: `apply_patch`, `create_goal`, `exec_command`, `get_goal`,
+   `list_mcp_resource_templates`, `list_mcp_resources`, `read_mcp_resource`,
+   `request_plugin_install`, `update_goal`, `update_plan`, `view_image`, `write_stdin`,
+   `web__run`. **No per-MCP-tool binding for `model-dispatch` exists anywhere in the schema** —
+   not a namespaced form (`mcp__model_dispatch__load_policy`), not a generic "call an MCP tool"
+   function.
+5. Told the model to probe MCP reachability using only its own MCP-related primitives, live.
+   `list_mcp_resources` / `list_mcp_resource_templates` against the built-in `codex` server
+   returned empty lists cleanly. The same two calls against `model-dispatch` **failed**:
+   `codex_core::tools::router: error=resources/list failed ... Mcp error: -32601: Method not
+   found`. The model then tried the classic Claude-Code-style namespaced call as a guess —
+   `tools.mcp__model_dispatch__execute_with_model` / `...load_policy` — and both raised
+   `TypeError: ... is not a function`.
+
+**Diagnosis, not yet a fix.** `codex features list` shows `ToolSearchAlwaysDeferMcpTools` active
+in the turn's feature set (confirmed via `RUST_LOG=debug`, which also confirms codex genuinely
+attempted the MCP handshake: `mcp_servers="model-dispatch, codex_apps"`,
+`mcp_server_count=2`, and an `rmcp` client actually initializes — this is not a registration
+failure, the server connects). But:
+
+- `--disable tool_search_always_defer_mcp_tools` changes nothing (that flag is listed
+  `removed:true` — it can't be toggled back off).
+- `--enable mcp_2026_07_28 --enable non_prefixed_mcp_tool_names` (the two `under development`
+  MCP-adjacent flags) changes nothing.
+- `--disable code_mode_host --disable code_mode` changes nothing — the exposed function schema
+  is identical with or without code-mode, so this is not a code-mode artifact.
+- The `list_mcp_resources` / `list_mcp_resource_templates` primitives query the MCP
+  **Resources** capability, not **Tools** — a different part of the MCP spec. `model-dispatch`
+  correctly returns "Method not found" for `resources/list` because the bridge implements only
+  `tools/list` and `tools/call`, never resources. These two primitives are therefore not the
+  right introspection surface even if they worked, and no other MCP-tool-call primitive is
+  present in the schema to try instead.
+
+**Working hypothesis, unconfirmed:** a server registered via plain `config.toml
+[mcp_servers]` (Document B section 6's "clone route — fallback") may simply not be
+exposed to the model as callable tools in a bare `codex exec` session on this build, and the
+plugin route (`.codex-plugin/plugin.json` + `codex plugin add`, Document B section 6's "primary"
+route, Q15 in the port track doc) may be required — not merely preferred for install-parity —
+for the model to actually see third-party MCP tools. This is untested: building a minimal
+plugin manifest and marketplace snapshot to check it is real work, not a quick probe, and is
+flagged rather than attempted speculatively.
+
+**Consequence for the port:** the driver-entry script (Document A P3) cannot be built to assume
+plain `[mcp_servers]` registration makes the bridge callable — that assumption is now falsified,
+not just unverified. Continuing to build P3's driver entry around it would be building on a
+foundation this session just disproved. This is reported to the project owner rather than
+silently worked around.
 
 ## Check 1 / 6 — hooks can block, denials leave no trace (confirmed live, this session)
 

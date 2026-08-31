@@ -4,12 +4,18 @@ import { GeminiFlashAdapter } from "./GeminiFlashAdapter.js";
 import { BuiltinAnthropicAdapter } from "./BuiltinAnthropicAdapter.js";
 import { AntigravityWorkerAdapter } from "./AntigravityWorkerAdapter.js";
 import { ClaudeCliAdapter } from "./ClaudeCliAdapter.js";
+import { OpenAIAdapter } from "./OpenAIAdapter.js";
 import { log } from "../log.js";
 
 /**
  * Adapter registry, keyed on the policy YAML's `adapter:` field.
- *   builtin-anthropic  → Claude, direct SDK (needs ANTHROPIC_API_KEY)
- *   claude-cli         → Claude, via local `claude -p` subprocess (Max subscription OAuth)
+ *   builtin-anthropic  → Claude, direct SDK (needs ANTHROPIC_API_KEY). Dormant:
+ *                        not in the official codex policy (D9), no Anthropic
+ *                        credential in codex setup. Carried compiled+tested.
+ *   claude-cli         → Claude, via local `claude -p` subprocess (Max subscription
+ *                        OAuth). Dormant for the same reason as builtin-anthropic.
+ *   openai             → GPT, direct SDK (needs OPENAI_API_KEY). The judgment
+ *                        worker in the official codex policy (D9).
  *   mcp:model-dispatch → Gemini as a model (one completion call)
  *   antigravity-worker → Gemini as an agent (Antigravity SDK session)
  */
@@ -21,6 +27,7 @@ let legacyAdapterIdWarned = false;
 export function createAdapter(config: ModelConfig): ModelAdapter {
   if (config.adapter === "builtin-anthropic") return new BuiltinAnthropicAdapter(config);
   if (config.adapter === "claude-cli") return new ClaudeCliAdapter(config);
+  if (config.adapter === "openai") return new OpenAIAdapter(config);
   if (config.adapter === "mcp:model-dispatch") return new GeminiFlashAdapter(config);
   if (config.adapter === LEGACY_GEMINI_ADAPTER_ID) {
     if (!legacyAdapterIdWarned) {
