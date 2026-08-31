@@ -270,6 +270,24 @@ needs a real rebuild (parse the patch-format headers), not just a port of the ma
 logic. Missing either matcher leaves a real gap in brownfield's core safety guarantee, not a
 cosmetic one.
 
+**Built and verified live** as `plugin/codex/hooks/write-contract-check.mjs` — 26 offline unit
+tests (`tools/test/write-contract-check.test.mjs`), plus two full `codex exec` end-to-end runs
+against a real write-contract with a restrictive allowlist:
+
+- First run: the model tried creating an out-of-allowlist file directly (denied), then tried
+  *editing `write-contract.json` itself* to add the path to its own allowlist — also denied,
+  because the contract file isn't in its own allowlist either (no special-case needed; the same
+  mechanism protects itself). It then fell back to a bare `touch` with no redirect, which an
+  earlier version of the extractor missed — an empty file landed on disk even though the
+  content-write was correctly blocked.
+- Extended the Bash extractor to cover `touch`/`cp`/`mv` (destination only), re-ran: the second
+  live run left **no artifact at all** — the model attempted the write, was denied, and even
+  cleaned up after itself. `write-contract.json` was verified byte-for-byte unchanged.
+
+Every decision (allow and deny) is also confirmed landing in `.sdlc/local/guard-decisions.jsonl`
+with its own timestamp, per D3 — checked directly against the sidecar file in both live runs, not
+just asserted in the unit tests.
+
 ## Other inherited findings (source: `ai-studies-console` harness-matrix Codex port, CLI 0.147.0)
 
 Reconfirmed where noted; the rest carry forward as design inputs pending a P3/P4 live check
