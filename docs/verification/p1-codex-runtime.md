@@ -42,7 +42,7 @@ setup docs either way.
 | 1 | Wire a hook that exits non-zero on a write, attempt the write | **PASS — live, this session** | Hooks CAN block. Gates brownfield scope |
 | 2 | `codex doctor`, `codex --version` | **PASS** — `codex-cli 0.151.0` as of 2026-08-31 (was `0.150.1`); doctor reports auth mode `ChatGPT`, git/repo detection, terminal, and search all ok. Two doctor *notes* (not failures): the running npx package root differs from the npm global package root, which only affects `codex update`'s target, not runtime behaviour | Install health |
 | 3 | `codex login status` | **PASS** — `Logged in using ChatGPT`; `~/.codex/auth.json` present (never printed) | Driver auth |
-| 4 | Register a stdio MCP server, list its tools | **FAIL — live, 2026-08-31, against the real `model-dispatch` server.** See the dedicated section below. Config-side registration works; the model cannot see or call the server's tools in a plain `codex exec` session | Bridge connectivity, namespacing — **this is the P3 blocker, not a P3 nicety** |
+| 4 | Register a stdio MCP server, list its tools | **RESOLVED, with a design change — live, 2026-08-31.** A model in a plain `codex exec` session cannot see or call `model-dispatch`'s tools (see the dedicated section below) — this falsified the assumption that config.toml registration alone is sufficient. Fix: the codex driver calls the bridge itself as a Node MCP client (`plugin/mcp/model-dispatch/src/driverClient.ts`), never relying on the model's own function-calling. Proven live end-to-end, including a second sandbox-specific finding — see both sections below | Bridge connectivity — closed for P3, in a different shape than Document A originally assumed |
 | 5 | `codex exec --json`, capture JSONL | **PASS — live.** Event sequence: `thread.started` → `turn.started` → `item.completed` (`agent_message`) → `turn.completed` (with `usage`). No event carries a timestamp | Telemetry event shape |
 | 6 | Repeat check 1 while capturing `--json` | **PASS — live.** The denied call produced zero items in the JSON stream — no `command_execution`, no error item, nothing. The only evidence was a `stderr` log line and the model's own narration in its final `agent_message` | Denied-call record is mandatory, not optional |
 | 7 | Set reasoning effort explicitly | **PASS — live.** `-c model_reasoning_effort="high"` accepted cleanly for `gpt-5.6-terra`. An invalid value (`"not-a-real-level"`) was rejected with a structured `turn.failed` error naming the valid enum: `none, minimal, low, medium, high, xhigh, max`. **Caveat:** a successful turn's `--json` output never echoes back which model or effort actually answered — enforceability is "the CLI rejects an invalid pin outright," not "the stream proves the correct pin was used." The fairness-pin assertion has to rely on the CLI's own validation, not on reading the effort back out of telemetry | Fairness pin is settable; only partially observable |
@@ -130,6 +130,65 @@ not just unverified. Continuing to build P3's driver entry around it would be bu
 foundation this session just disproved. This is reported to the project owner rather than
 silently worked around.
 
+## Check 4 resolution — the driver calls the bridge itself, as a Node MCP client (2026-08-31)
+
+Direction taken after reporting the finding above: since GPT is a pure conductor by design (D1 —
+"runs the loop, calls tools, writes files, authors no content") and every model call including
+judgment work is required to route through the bridge regardless (Document A section 3), nothing
+about the architecture actually requires the *model* to be the one invoking the MCP protocol.
+The codex driver script can be the MCP client itself.
+
+Built `plugin/mcp/model-dispatch/src/driverClient.ts` — a thin wrapper around
+`@modelcontextprotocol/sdk`'s `Client` + `StdioClientTransport` (already a bridge dependency; no
+new package). It spawns `dist/server.js` as a subprocess and calls its tools directly, in Node,
+with no model in the loop for the dispatch mechanics themselves. The five MCP tool
+names/signatures (Document A section 8, locked) are unchanged — only who calls them changed.
+
+**Proof, not just a code review.** `test/driverClient.test.mjs` spawns the real built server (no
+mocks) and calls `load_policy` and `preflight_dispatch` for real — both make zero vendor API
+calls, so this stays offline and free. All pass. Then confirmed the same client works when
+*launched by codex itself*, not just by a plain Node test runner: had `codex exec` run a script
+that calls `connectBridge()` and `load_policy`, and got the correct policy back
+(`{"name":"gpt-plus-flash","version":1,...}`) — proof the whole chain (`codex exec` → shell →
+Node driver script → MCP client → spawned bridge subprocess → real tool call) works end to end.
+
+## New finding — `codex exec`'s default `workspace-write` sandbox silently kills the bridge subprocess (CRITICAL, 2026-08-31)
+
+Discovered while doing the check-4 resolution proof above. The first `codex exec` run of the
+driver script (plain `--sandbox workspace-write`, this repo's default in the probes above) failed
+with `McpError: MCP error -32000: Connection closed` — the bridge subprocess died before
+completing the MCP handshake.
+
+**Isolating it, in order:**
+1. `--sandbox danger-full-access` — same script, same command: **works**, correct policy JSON
+   returned. Rules out the driver client code itself.
+2. A trivial subprocess spawn (`spawn(process.execPath, ["--version"])`) under plain
+   `workspace-write` — **works**. Rules out "workspace-write blocks child-process spawning" as
+   the cause; the problem is specific to this particular child.
+3. Captured the bridge subprocess's own stderr (default-inherited by the parent) under
+   `workspace-write` — **completely empty**, no stack trace, no error text. A JS exception would
+   print to stderr; a silent, immediate death with nothing printed is the signature of the
+   process being killed by the sandbox (Landlock/seccomp) rather than crashing on its own.
+4. `--sandbox workspace-write -c 'sandbox_workspace_write.network_access=true'` — **works**,
+   identical correct output to the danger-full-access run.
+
+**Root cause:** `workspace-write`'s default sandbox blocks network access, and something in the
+bridge's startup path needs it — most likely `geminiTransports.ts`'s ADC/Vertex backend
+resolution, which the earlier `preflight_dispatch` test run (outside any codex sandbox) showed
+touches `defaultAdcPath()` and logs `backend=vertex-adc` at construction time, independent of
+whether the run's policy actually dispatches to Gemini in that call. Under a sandbox that blocks
+the network syscall outright, an underlying SDK's synchronous or unhandled probe attempt gets the
+process killed rather than raising a catchable JS error — hence the empty stderr.
+
+**Consequence for the port:** the codex driver script must not run under a bare `--sandbox
+workspace-write` invocation. Either pass `-c 'sandbox_workspace_write.network_access=true'`
+whenever spawning the bridge, or move to `danger-full-access` for the phases that touch it. This
+gates P4's driver-entry documentation and the setup docs, not just P3 — flagging it now so it
+isn't rediscovered as a mystery hang during the P5 quick-demo run. Root-causing the exact
+syscall inside the bridge's dependency tree that trips the sandbox is not done here — the
+workaround is proven and cheap; chasing the precise trigger inside `@google/genai` or its
+transitive deps is not worth the time against this port's actual deliverables.
+
 ## Check 1 / 6 — hooks can block, denials leave no trace (confirmed live, this session)
 
 Registered via:
@@ -216,7 +275,15 @@ codex exec --json -m gpt-5.6-terra -c model_reasoning_effort="high" \
 2. Re-verify the `gpt-5.6-terra` pricing pin against OpenAI's published rates — gates P5 only.
 3. Re-test the web-search hook-invisibility finding on `0.151.0` with a prompt engineered to
    actually trigger hosted search — folded into P4's audit-flag work rather than done standalone.
-4. Live MCP tool-namespacing test, once the real `model-dispatch` server is wired in P3.
+4. ~~Live MCP tool-namespacing test, once the real `model-dispatch` server is wired in P3.~~
+   **Resolved differently than expected — see the check 4 resolution section above.** The model
+   never sees the bridge's tools at all in a plain `codex exec` session, namespaced or not; the
+   codex driver calls the bridge itself instead. Namespacing per Document A section 7's tool-
+   namespacing test is moot for the codex side — it only mattered for a model-driven call.
 5. Driver auth for this build-out: this session used the free ChatGPT seat login throughout
    P1, at $0, with no paid-tier gate encountered. Track doc Q11 (own seat vs. `OPENAI_API_KEY`)
    stays open for whoever runs the paid P5/P6 reference runs — not a P1–P4 blocker.
+6. Root-cause exactly which dependency/syscall inside the bridge's startup path trips the
+   `workspace-write` sandbox's network block (see the sandbox finding above). The workaround
+   (`network_access=true`, or `danger-full-access`) is proven and in place; the precise trigger
+   is not chased further — not worth the time against this port's deliverables.
