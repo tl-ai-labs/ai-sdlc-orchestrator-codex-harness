@@ -15,7 +15,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 
-import { connectBridge, DEFAULT_TOOL_TIMEOUT_MS } from "../dist/driverClient.js";
+import { connectBridge, DEFAULT_TOOL_TIMEOUT_MS, canSpawnChildProcess, diagnoseConnectFailure } from "../dist/driverClient.js";
 
 test("load_policy reaches the real server and returns the official codex policy", async () => {
   const bridge = await connectBridge();
@@ -107,4 +107,45 @@ test("callTool passes an explicit timeout rather than inheriting the SDK default
     src, /callTool\(\s*\{[^}]*\}\s*,\s*undefined\s*,\s*\{\s*timeout\s*\}/s,
     "callTool must be given a timeout in its RequestOptions",
   );
+});
+
+// ── sandbox diagnosis ────────────────────────────────────────────────────
+//
+// Codex runs the model's shell commands in a sandbox that permits child
+// processes but denies the pipes needed to talk to one. This client reaches
+// the bridge over exactly those pipes, so the transport dies at birth and the
+// SDK reports `MCP error -32000: Connection closed` — a message that sends
+// people hunting for a crashed or unbuilt server, which is the one thing it
+// never is. These pin the diagnosis that replaces it.
+
+test("the spawn probe uses piped stdio — an `ignore` probe passes inside the sandbox and proves nothing", () => {
+  const calls = [];
+  const run = (cmd, args, opts) => { calls.push(opts); return {}; };
+  canSpawnChildProcess(run);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].stdio, "pipe", "probing with `ignore` would report a healthy machine under the sandbox");
+});
+
+test("a connect failure on a machine that CAN pipe is passed through untouched", () => {
+  const msg = diagnoseConnectFailure(new Error("boom"), () => ({ ok: true, code: null }));
+  assert.equal(msg, "boom", "never blame the sandbox without evidence — the real error is the honest answer");
+});
+
+test("a connect failure on a machine that cannot pipe names the cause and both ways out", () => {
+  const msg = diagnoseConnectFailure(
+    new Error("MCP error -32000: Connection closed"),
+    () => ({ ok: false, code: "EPERM" }),
+  );
+  assert.match(msg, /MCP error -32000: Connection closed/, "the original error must survive");
+  assert.match(msg, /EPERM/);
+  assert.match(msg, /not crashed, missing or unbuilt/, "rules out where people actually look first");
+  assert.match(msg, /danger-full-access/, "the interactive way out");
+  assert.match(msg, /run\.mjs/, "the headless way out");
+});
+
+test("the probe reports the real errno rather than collapsing every failure to one code", () => {
+  const enoent = canSpawnChildProcess(() => ({ error: Object.assign(new Error("x"), { code: "ENOENT" }) }));
+  assert.deepEqual(enoent, { ok: false, code: "ENOENT" });
+  const fine = canSpawnChildProcess(() => ({ status: 0 }));
+  assert.deepEqual(fine, { ok: true, code: null });
 });

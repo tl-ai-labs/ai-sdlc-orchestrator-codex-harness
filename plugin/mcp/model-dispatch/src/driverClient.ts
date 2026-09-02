@@ -17,6 +17,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -72,6 +73,60 @@ function parseToolResult(text: string): unknown {
   }
 }
 
+/**
+ * Can this process start a child it can TALK to?
+ *
+ * `stdio: "pipe"` is the point, and it is not incidental. Measured on
+ * codex-cli 0.152.1 inside `codex sandbox`:
+ *
+ *   spawnSync(node, ["-e",""], { stdio: "ignore" })  → ok
+ *   spawnSync(node, ["-e",""], { stdio: "pipe"   })  → EPERM
+ *   spawnSync("gcloud", …,     { encoding: "utf8" }) → EPERM
+ *
+ * So the sandbox does not forbid child processes; it forbids the PIPES a
+ * parent needs to read one. A probe that spawns with `ignore` reports a
+ * healthy machine and is worthless here — this client reaches the bridge over
+ * exactly those pipes, which is why the transport dies at birth and the SDK
+ * reports the generic `MCP error -32000: Connection closed`. That message
+ * sends people looking for a crashed or unbuilt server, which is the one
+ * thing it never is.
+ *
+ * Default and `workspace-write` both fail this way; `danger-full-access`
+ * passes.
+ */
+export function canSpawnChildProcess(run = spawnSync): { ok: boolean; code: string | null } {
+  const probe = run(process.execPath, ["-e", ""], { stdio: "pipe" });
+  const code = (probe as { error?: NodeJS.ErrnoException }).error?.code ?? null;
+  return { ok: !code, code };
+}
+
+/**
+ * Turns a failed `connect()` into a message that names the actual cause.
+ *
+ * Only claims the sandbox when a live probe proves spawning is blocked —
+ * otherwise the original error is the honest answer and is passed through.
+ */
+export function diagnoseConnectFailure(
+  err: unknown,
+  probe: () => { ok: boolean; code: string | null } = canSpawnChildProcess,
+): string {
+  const original = err instanceof Error ? err.message : String(err);
+  const spawnable = probe();
+  if (spawnable.ok) return original;
+
+  return (
+    `${original}\n\n` +
+    `This process cannot open pipes to a child process (${spawnable.code}), and the bridge is ` +
+    `reached over exactly those pipes — so the server never started. It is not crashed, missing ` +
+    `or unbuilt.\n\n` +
+    `Codex's sandbox allows child processes but denies piped stdio, under both its default and ` +
+    `\`workspace-write\` modes. Two ways to dispatch:\n` +
+    `  • start codex with a sandbox that permits it:  codex -s danger-full-access\n` +
+    `  • or run the pipeline headlessly, where the driver spawns the bridge outside codex:\n` +
+    `      node plugin/codex/run.mjs --brief=<file> --project-root="$(pwd)" --output-dir="$(pwd)/.sdlc"`
+  );
+}
+
 export async function connectBridge(options: BridgeClientOptions = {}): Promise<BridgeClient> {
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -82,7 +137,13 @@ export async function connectBridge(options: BridgeClientOptions = {}): Promise<
   });
 
   const client = new Client({ name: "codex-driver", version: "0.1.0" });
-  await client.connect(transport);
+  try {
+    await client.connect(transport);
+  } catch (err) {
+    // `Connection closed` is the SDK's answer to every transport death. Say
+    // which one this was before it reaches a user as a mystery.
+    throw new Error(diagnoseConnectFailure(err));
+  }
 
   const timeout = options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
 
@@ -92,7 +153,15 @@ export async function connectBridge(options: BridgeClientOptions = {}): Promise<
       // progress notifications, so it would have no effect and would only
       // suggest a liveness signal that does not exist. `maxTotalTimeout` is
       // left unset for the same reason — `timeout` is already the total.
-      const result = await client.callTool({ name, arguments: args }, undefined, { timeout });
+      let result;
+      try {
+        result = await client.callTool({ name, arguments: args }, undefined, { timeout });
+      } catch (err) {
+        // The transport can also die AFTER connect() resolves — under a
+        // spawn-denying sandbox the failure lands here, on the first call,
+        // as the same generic `Connection closed`. Diagnose it in both places.
+        throw new Error(diagnoseConnectFailure(err));
+      }
       const text = extractText(result as any);
       if ((result as any).isError) {
         throw new Error(`bridge tool '${name}' returned an error: ${text}`);

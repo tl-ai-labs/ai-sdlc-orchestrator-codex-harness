@@ -86,6 +86,16 @@ Agent-side steps (1 = discovery smoke, 3 = dispatch smoke) — you run yourself:
    echo '{"tiers_tested":["gpt","gemini-flash"]}' | node '{{PLUGIN_ROOT}}/scripts/pre-check.mjs' --record dispatch pass
    ```
 
+**Dispatch needs an unsandboxed session.** `dispatch.mjs` reaches the bundled bridge by spawning
+it and talking over pipes, and codex's sandbox denies piped stdio under both its default and
+`workspace-write` modes. Under those, step 3 fails with `MCP error -32000: Connection closed` —
+which is not a crashed or unbuilt server. The bridge prints the two ways out when it detects this;
+relay them rather than debugging the server:
+
+- start codex with `codex -s danger-full-access`, or
+- run the pipeline headlessly, where the driver spawns the bridge outside codex:
+  `node '{{PLUGIN_ROOT}}/codex/run.mjs' --brief=<file> --project-root='{{PROJECT_ROOT}}'`
+
 If any pre-check step fails, **do not proceed to Gate 0.** Print the reported remediation and
 offer inline choices (fix now / switch policy / abort). Do not kick the user out to external
 fixes.
