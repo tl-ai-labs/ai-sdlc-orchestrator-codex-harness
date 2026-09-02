@@ -222,10 +222,21 @@ function seedPolicies() {
     "    auth: { env: GEMINI_API_KEY }",
     "",
   ].join("\n"));
+  writeFileSync(join(dir, "with-agent.yaml"), [
+    "version: 1",
+    "name: with-agent",
+    "models:",
+    "  - id: flash-agent",
+    "    adapter: antigravity-worker",
+    "    model_name: gemini-3.7-flash",
+    "",
+  ].join("\n"));
   return dir;
 }
 
-function checkCreds(policy, { home, policiesDir, env = {} }) {
+// `node` is spawned by absolute path so a test can empty PATH — which is how
+// the "gcloud cannot be executed" case is reproduced without a sandbox.
+function checkCreds(policy, { home, policiesDir, env = {}, path } = {}) {
   const dir = newTmpDir();
   try {
     const scrubbed = { ...process.env, HOME: home, ...env };
@@ -233,7 +244,8 @@ function checkCreds(policy, { home, policiesDir, env = {} }) {
     delete scrubbed.GEMINI_API_KEY;
     delete scrubbed.GOOGLE_APPLICATION_CREDENTIALS;
     if (policiesDir) scrubbed.SDLC_POLICIES_DIR_FOR_TESTS = policiesDir;
-    const r = spawnSync("node", [SCRIPT, "--check-creds", `--policy=${policy}`], {
+    if (path !== undefined) scrubbed.PATH = path;
+    const r = spawnSync(process.execPath, [SCRIPT, "--check-creds", `--policy=${policy}`], {
       cwd: dir,
       encoding: "utf8",
       env: scrubbed,
@@ -293,6 +305,33 @@ test("--check-creds keeps OPENAI_API_KEY a hard requirement — a seat is a diff
       parsed.missing.map((m) => m.name),
       ["OPENAI_API_KEY"],
       "ADC covers Gemini; nothing covers the judgment key",
+    );
+  } finally { cleanup(policiesDir); cleanup(home); }
+});
+
+test("a Vertex probe that could not RUN falls back to the credential file, not to 'missing'", () => {
+  // codex executes its own tool calls in a sandbox that denies process spawn,
+  // so `gcloud` returns EPERM there; an empty PATH reproduces the same shape
+  // as ENOENT. Either way the probe never ran, which is not evidence that the
+  // credential is absent — and the file it would have read is right there.
+  const home = homeWithAdc();
+  const policiesDir = seedPolicies();
+  try {
+    const parsed = checkCreds("with-agent", { home, policiesDir, path: "" });
+    assert.equal(parsed.ok, true, `unrunnable probe + valid ADC must pass, got ${JSON.stringify(parsed)}`);
+  } finally { cleanup(policiesDir); cleanup(home); }
+});
+
+test("an unrunnable Vertex probe with no credential file behind it is still reported", () => {
+  // The other half: the fallback must not turn into a blanket pass.
+  const home = homeWithoutAdc();
+  const policiesDir = seedPolicies();
+  try {
+    const parsed = checkCreds("with-agent", { home, policiesDir, path: "" });
+    assert.equal(parsed.ok, false);
+    assert.ok(
+      parsed.missing.some((m) => m.kind === "vertex_adc"),
+      `must still report the agent tier as unauthenticated: ${JSON.stringify(parsed)}`,
     );
   } finally { cleanup(policiesDir); cleanup(home); }
 });

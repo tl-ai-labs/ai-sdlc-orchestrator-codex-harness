@@ -44,6 +44,7 @@ import {
   inspectCredentialFile,
   vertexCredentialState,
   hasGeminiCredentials,
+  hasVertexCredentials,
 } from "../codex/verify-setup.mjs";
 
 export { OFF_LIMITS_DEFAULT };
@@ -353,18 +354,30 @@ function introspectAllPolicies() {
 
 // ── credential probes ────────────────────────────────────────────────
 
+/**
+ * `unprovable: true` marks the case where the probe never ran at all — gcloud
+ * is not on PATH, or the process could not be spawned (codex's own sandbox
+ * denies process execution and returns EPERM). That says nothing about whether
+ * the credential exists, so callers must not read it as absence.
+ */
 function probeVertexAdc() {
   try {
     const r = spawnSync("gcloud", ["auth", "application-default", "print-access-token"], {
       encoding: "utf8",
       stdio: "pipe",
     });
-    if (r.error) return { ok: false, reason: r.error.code === "ENOENT" ? "gcloud not installed" : r.error.message };
+    if (r.error) {
+      return {
+        ok: false,
+        unprovable: true,
+        reason: r.error.code === "ENOENT" ? "gcloud not installed" : r.error.message,
+      };
+    }
     if (r.status !== 0) return { ok: false, reason: (r.stderr || "").trim().split("\n")[0] || `gcloud exit ${r.status}` };
     if (!(r.stdout || "").trim()) return { ok: false, reason: "gcloud returned empty token" };
     return { ok: true };
   } catch (e) {
-    return { ok: false, reason: e?.message ?? String(e) };
+    return { ok: false, unprovable: true, reason: e?.message ?? String(e) };
   }
 }
 
@@ -470,7 +483,25 @@ function checkCredsFor(policyName) {
   }
   if (info.requires_vertex_adc) {
     const p = probeVertexAdc();
-    if (!p.ok) missing.push({ kind: "vertex_adc", fix: "gcloud auth application-default login", reason: p.reason });
+    if (!p.ok) {
+      // A probe that RAN and was refused is real evidence. A probe that could
+      // not run is not — and codex runs its own tool calls in a sandbox that
+      // denies process spawn, so `$mmo-codex:policy` would otherwise report a
+      // missing credential on every machine, including ones where ADC works.
+      // Fall back to the credential file itself: it is what verify-setup.mjs
+      // reads, and what the Antigravity SDK loads at dispatch time.
+      const vertex = p.unprovable ? geminiDoorState().vertex : null;
+      if (!hasVertexCredentials(vertex)) {
+        missing.push({
+          kind: "vertex_adc",
+          fix: "gcloud auth application-default login",
+          reason:
+            vertex?.state === "broken"
+              ? `${p.reason}; the credential file is present but unusable: ${vertex.detail}`
+              : p.reason,
+        });
+      }
+    }
   }
   if (info.requires_claude_cli) {
     const p = probeClaudeCli();
