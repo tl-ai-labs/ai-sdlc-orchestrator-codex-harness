@@ -327,12 +327,84 @@ test("cross-repo write: denies an absolute path that resolves outside cwd's cont
   } finally { cleanup(repoA); cleanup(repoB); }
 });
 
-test("pre-contract safety net: denies .env write even when no contract exists", async () => {
+test("pre-contract safety net: never overwrites an EXISTING .env", async () => {
+  // The reason the .env rule exists: a real .env holds the user's secrets.
+  // This is the case that must stay refused, and the narrowed rule keys on
+  // exactly it.
   const dir = makeRepo(undefined);
   try {
+    writeFileSync(join(dir, ".env"), "DATABASE_URL=postgres://real:secret@host/db\n");
     const r = await runHook(dir, applyPatchAdd(".env"));
     assert.equal(r.decision, "deny");
     assert.match(r.reason, /always-off-limits/);
+    assert.match(
+      readFileSync(join(dir, ".env"), "utf8"), /real:secret/,
+      "the existing file must be untouched",
+    );
+  } finally { cleanup(dir); }
+});
+
+test("pre-contract safety net: allows CREATING a .env that does not exist", async () => {
+  // The greenfield test fixture. The pipeline's test phase copies the run's
+  // own .env.test to .env before `npm test`, for an app whose codegen emitted
+  // a validating config module. The blanket rule refused it, so the Workforce
+  // Ops reference run silently skipped build, E2E and startup verification —
+  // the harness was forbidding a write it also instructs.
+  const dir = makeRepo(undefined);
+  try {
+    const r = await runHook(dir, applyPatchAdd(".env"));
+    assert.equal(r.decision, "allow");
+  } finally { cleanup(dir); }
+});
+
+test("pre-contract safety net: still refuses .env.* variants whether or not they exist", async () => {
+  // The narrowing is for the bare fixture name only. `.env.production` is
+  // never something a greenfield test bootstrap needs.
+  const dir = makeRepo(undefined);
+  try {
+    for (const name of [".env.production", ".env.local"]) {
+      const r = await runHook(dir, applyPatchAdd(name));
+      assert.equal(r.decision, "deny", `${name} must stay off-limits`);
+    }
+  } finally { cleanup(dir); }
+});
+
+test("pre-contract safety net: allows the harness to write its OWN run record", async () => {
+  // Regression from the first real end-to-end run: `.sdlc/**` was off-limits,
+  // which blocked the conductor writing requirements.md / packets.json — the
+  // artifacts the run exists to produce. The run halted at the first packet.
+  const dir = makeRepo(undefined);
+  try {
+    for (const path of [".sdlc/requirements.md", ".sdlc/packets.json", ".sdlc/telemetry.jsonl"]) {
+      const r = await runHook(dir, applyPatchAdd(path));
+      assert.equal(r.decision, "allow", `${path} is the harness's own output and must be writable`);
+    }
+  } finally { cleanup(dir); }
+});
+
+test("pre-contract safety net: still refuses the enforcement state under .sdlc/local/", async () => {
+  // Narrowing the pattern must not open the guard's own footing: the write
+  // contract and the decision log stay tamper-proof.
+  const dir = makeRepo(undefined);
+  try {
+    for (const path of [".sdlc/local/write-contract.json", ".sdlc/local/guard-decisions.jsonl"]) {
+      const r = await runHook(dir, applyPatchAdd(path));
+      assert.equal(r.decision, "deny", `${path} is enforcement state and must stay protected`);
+    }
+  } finally { cleanup(dir); }
+});
+
+test("pre-contract safety net: refuses writes to .agents/, the conductor's own instructions", async () => {
+  // `verify-setup.mjs --fix` links the shipped skills into .agents/skills, so
+  // those files are the pipeline state machine, the brownfield guide and the
+  // reviewer roles. A run able to write there could rewrite the rules it is
+  // being judged by — the same hazard the .sdlc/local/ entry guards against.
+  const dir = makeRepo(undefined);
+  try {
+    for (const path of [".agents/skills/pipeline/SKILL.md", ".agents/skills/security-review.md"]) {
+      const r = await runHook(dir, applyPatchAdd(path));
+      assert.equal(r.decision, "deny", `${path} is conductor instruction state and must stay protected`);
+    }
   } finally { cleanup(dir); }
 });
 

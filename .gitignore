@@ -18,6 +18,19 @@ plugin/mcp/model-dispatch/dist/
 /.sdlc/
 examples/*/passes/*/
 
+# Codex's skill scan path. `verify-setup.mjs --fix` symlinks the shipped
+# skills in plugin/skills/ into here, because codex scans .agents/skills and
+# not plugin/skills (docs/verification/p1-codex-runtime.md). Generated rather
+# than committed: git materializes symlinks as plain text files on a Windows
+# checkout without developer mode, which would leave broken skill directories
+# that look present but carry no SKILL.md.
+#
+# Only the generated skills subdirectory is ignored — NOT all of `.agents/`.
+# `.agents/plugins/marketplace.json` lives beside it and must be committed, or
+# `codex plugin marketplace add <this repo>` has nothing to read and the
+# plugin cannot be installed from a clone at all.
+/.agents/skills/
+
 # Generated MCP registration — per-machine, absolute paths + copied API keys.
 .mcp.json
 

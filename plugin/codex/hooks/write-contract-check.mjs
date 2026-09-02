@@ -47,7 +47,7 @@
 
 import { readFile, appendFile, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, relative, sep, dirname, isAbsolute, join } from "node:path";
+import { resolve, relative, sep, dirname, isAbsolute, join, basename } from "node:path";
 import { HARDCODED_OFF_LIMITS } from "../../scripts/lib/off-limits.mjs";
 import { log } from "../../scripts/lib/log.mjs";
 
@@ -332,6 +332,30 @@ async function checkOneTarget(target, call) {
   const contractPath = findContractPath(dirname(absTarget)) ?? cwdContractPath;
 
   if (!contractPath) {
+    // The greenfield test fixture, and only that.
+    //
+    // The pipeline's test phase must bootstrap an `.env` before `npm test`,
+    // for an app whose codegen produced a validating config module — it
+    // copies the run's own `.env.test` across. The blanket `.env` rule
+    // refused it, so the Workforce Ops reference run silently skipped build,
+    // E2E and startup verification and said so in its final report. The
+    // harness was forbidding a write it also instructs.
+    //
+    // Narrow on purpose. Everything the `.env` rule exists to protect still
+    // holds:
+    //   - an EXISTING .env is never touched, so real secrets cannot be
+    //     overwritten — this only permits creating one that is not there;
+    //   - brownfield is unaffected, because that path has a contract and
+    //     never reaches this pre-contract branch at all (and its own test
+    //     phase refuses the copy outright);
+    //   - `.env.*` variants stay blocked, so `.env.production` and friends
+    //     are still refused.
+    // The residue is a greenfield run creating a throwaway fixture inside
+    // the tree it just generated, which belongs to nobody else.
+    if (basename(targetNorm) === ".env" && !existsSync(absTarget)) {
+      return { deny: false };
+    }
+
     const preHit = HARDCODED_OFF_LIMITS.find((p) => matchesAtAnyDepth(targetNorm, p));
     if (preHit) {
       return {
