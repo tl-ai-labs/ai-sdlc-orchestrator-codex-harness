@@ -15,7 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,6 +37,32 @@ function runWizard(env = {}) {
   });
 }
 
+/**
+ * Pins the policy the wizard will resolve, then restores whatever was there.
+ *
+ * The wizard reads this clone's own `.sdlc/project.json` to decide whether a
+ * missing OPENAI_API_KEY is a blocker — a metered policy needs one, the seat
+ * policy does not. That file is gitignored and machine-local, so a developer
+ * who has chosen the seat policy would otherwise see these tests fail while CI
+ * (which has no such file) passed. Pin it rather than inherit it.
+ */
+function withPolicy(name, fn) {
+  const dir = join(REPO_ROOT, ".sdlc");
+  const path = join(dir, "project.json");
+  const had = existsSync(path) ? readFileSync(path, "utf8") : null;
+  const madeDir = !existsSync(dir);
+  try {
+    mkdirSync(dir, { recursive: true });
+    const base = had ? JSON.parse(had) : {};
+    writeFileSync(path, JSON.stringify({ ...base, default_policy: name }, null, 2));
+    return fn();
+  } finally {
+    if (had !== null) writeFileSync(path, had);
+    else if (madeDir) rmSync(dir, { recursive: true, force: true });
+    else rmSync(path, { force: true });
+  }
+}
+
 test("the wizard runs to completion with stdin closed instead of hanging", () => {
   const r = runWizard();
   assert.notEqual(r.signal, "SIGTERM", "wizard hung waiting for input that will never come");
@@ -53,11 +79,19 @@ test("every question falls through to a documented default when non-interactive"
 });
 
 test("a blocked setup reports its verdict through the exit code, not just on screen", () => {
-  // This machine has no OPENAI_API_KEY, so the wizard is genuinely blocked —
-  // asserting the real state rather than simulating one.
-  const r = runWizard({ OPENAI_API_KEY: "" });
+  // Pinned to the metered policy so the block is real and not machine-dependent:
+  // no key + a policy that bills one is a genuine blocker.
+  const r = withPolicy("gpt-plus-flash", () => runWizard({ OPENAI_API_KEY: "" }));
   assert.match(r.stdout, /Setup incomplete/);
   assert.equal(r.status, 1, "a caller checking only the exit code must see the block");
+});
+
+test("the same install is NOT blocked once the policy is one that needs no key", () => {
+  // The other half of the same rule — a wizard that blocks here is telling a
+  // ChatGPT-seat user to buy a key they will never use.
+  const r = withPolicy("gpt-seat-plus-flash", () => runWizard({ OPENAI_API_KEY: "" }));
+  assert.match(r.stdout, /does not need one/);
+  assert.ok(!/Setup incomplete/.test(r.stdout), `must not block: ${r.stdout}`);
 });
 
 test("the wizard blames the policy for the key requirement, and names the keyless alternative", () => {
@@ -65,7 +99,7 @@ test("the wizard blames the policy for the key requirement, and names the keyles
   // metered policy — which really does bill the key, so the block is correct.
   // What it must not do is present the key as unconditional: a ChatGPT seat
   // plus gpt-seat-plus-flash runs the same models without one.
-  const r = runWizard({ OPENAI_API_KEY: "" });
+  const r = withPolicy("gpt-plus-flash", () => runWizard({ OPENAI_API_KEY: "" }));
   assert.match(r.stdout, /OPENAI_API_KEY is not set/);
   assert.match(r.stdout, /policy 'gpt-plus-flash' bills it/, "the reason must name the policy");
   assert.match(r.stdout, /gpt-seat-plus-flash/, "the way out must be on screen, not only in the docs");

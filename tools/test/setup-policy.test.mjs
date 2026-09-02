@@ -166,21 +166,87 @@ test("--list-json includes malformed YAML as { name, error } entry", () => {
   } finally { cleanup(policiesDir); cleanup(dir); }
 });
 
-test("--check-creds reports missing env vars with fix strings", () => {
+// GEMINI_API_KEY is one of two doors to the mechanical tier, so these tests
+// have to control BOTH. `HOME` decides where adcPath() looks, so pointing it
+// at an empty directory shuts the Vertex door; writing an ADC-shaped file
+// there opens it. Without that, the result would depend on whether whoever
+// runs the suite happens to have run `gcloud auth` on their machine.
+function homeWithoutAdc() {
+  return newTmpDir();
+}
+
+function homeWithAdc() {
+  const home = newTmpDir();
+  const dir = join(home, ".config", "gcloud");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "application_default_credentials.json"),
+    JSON.stringify({
+      type: "authorized_user",
+      client_id: "test-client-id",
+      client_secret: "test-client-secret",
+      refresh_token: "test-refresh-token",
+    }),
+  );
+  return home;
+}
+
+// Fixture policies rather than shipped ones, so these exercise the two-door
+// rule alone. Every shipped Gemini policy also carries the antigravity-worker
+// leaf, whose `requires_vertex_adc` check shells out to `gcloud` for a LIVE
+// token — which a planted credential file cannot satisfy, and which would be
+// testing a different rule anyway.
+function seedPolicies() {
+  const dir = newTmpDir();
+  writeFileSync(join(dir, "gemini-only.yaml"), [
+    "version: 1",
+    "name: gemini-only",
+    "models:",
+    "  - id: flash",
+    "    adapter: mcp:model-dispatch",
+    "    model_name: gemini-3.7-flash",
+    "    auth: { env: GEMINI_API_KEY }",
+    "",
+  ].join("\n"));
+  writeFileSync(join(dir, "gemini-plus-openai.yaml"), [
+    "version: 1",
+    "name: gemini-plus-openai",
+    "models:",
+    "  - id: gpt",
+    "    adapter: openai",
+    "    model_name: gpt-5.6-terra",
+    "    auth: { env: OPENAI_API_KEY }",
+    "  - id: flash",
+    "    adapter: mcp:model-dispatch",
+    "    model_name: gemini-3.7-flash",
+    "    auth: { env: GEMINI_API_KEY }",
+    "",
+  ].join("\n"));
+  return dir;
+}
+
+function checkCreds(policy, { home, policiesDir, env = {} }) {
   const dir = newTmpDir();
   try {
-    // Wipe ANTHROPIC_API_KEY + GEMINI_API_KEY from the subprocess env by
-    // spawning without them. Node's spawn env replaces the whole env when set.
-    const scrubbed = { ...process.env };
+    const scrubbed = { ...process.env, HOME: home, ...env };
     delete scrubbed.ANTHROPIC_API_KEY;
     delete scrubbed.GEMINI_API_KEY;
-    const r = spawnSync("node", [SCRIPT, "--check-creds", "--policy=opus-plus-flash"], {
+    delete scrubbed.GOOGLE_APPLICATION_CREDENTIALS;
+    if (policiesDir) scrubbed.SDLC_POLICIES_DIR_FOR_TESTS = policiesDir;
+    const r = spawnSync("node", [SCRIPT, "--check-creds", `--policy=${policy}`], {
       cwd: dir,
       encoding: "utf8",
       env: scrubbed,
     });
     assert.equal(r.status, 0, `exit 0 expected, got ${r.status}. stderr: ${r.stderr}`);
-    const parsed = JSON.parse(r.stdout);
+    return JSON.parse(r.stdout);
+  } finally { cleanup(dir); }
+}
+
+test("--check-creds reports missing env vars with fix strings", () => {
+  const home = homeWithoutAdc();
+  try {
+    const parsed = checkCreds("opus-plus-flash", { home });
     assert.equal(parsed.ok, false, "missing creds → ok:false");
     const missingNames = parsed.missing.filter((m) => m.kind === "env").map((m) => m.name);
     assert.ok(missingNames.includes("ANTHROPIC_API_KEY"), "must flag ANTHROPIC_API_KEY");
@@ -188,7 +254,47 @@ test("--check-creds reports missing env vars with fix strings", () => {
     for (const m of parsed.missing) {
       assert.ok(m.fix, `missing entry must carry a fix string: ${JSON.stringify(m)}`);
     }
-  } finally { cleanup(dir); }
+  } finally { cleanup(home); }
+});
+
+test("--check-creds accepts Vertex ADC in place of GEMINI_API_KEY — two doors, not one", () => {
+  // The regression that sent a user to buy an API key for a tier that was
+  // already working, and that made $mmo-codex:policy refuse to revalidate a
+  // policy already persisted and running. The policy files say it on the line
+  // above the auth block: "AI Studio door. Unset → falls through to Vertex ADC."
+  const home = homeWithAdc();
+  const policiesDir = seedPolicies();
+  try {
+    const parsed = checkCreds("gemini-only", { home, policiesDir });
+    assert.equal(parsed.ok, true, `ADC must satisfy the mechanical tier, got ${JSON.stringify(parsed)}`);
+  } finally { cleanup(policiesDir); cleanup(home); }
+});
+
+test("--check-creds still flags GEMINI_API_KEY when BOTH doors are shut, and names the other one", () => {
+  const home = homeWithoutAdc();
+  const policiesDir = seedPolicies();
+  try {
+    const parsed = checkCreds("gemini-only", { home, policiesDir });
+    assert.equal(parsed.ok, false);
+    const gemini = parsed.missing.find((m) => m.name === "GEMINI_API_KEY");
+    assert.ok(gemini, "GEMINI_API_KEY must be reported when nothing else covers the tier");
+    assert.match(gemini.fix, /application-default login/, "the fix must name the second door too");
+    assert.equal(gemini.alternative.kind, "vertex_adc");
+  } finally { cleanup(policiesDir); cleanup(home); }
+});
+
+test("--check-creds keeps OPENAI_API_KEY a hard requirement — a seat is a different policy, not a second door", () => {
+  const home = homeWithAdc();
+  const policiesDir = seedPolicies();
+  try {
+    const parsed = checkCreds("gemini-plus-openai", { home, policiesDir, env: { OPENAI_API_KEY: "" } });
+    assert.equal(parsed.ok, false);
+    assert.deepEqual(
+      parsed.missing.map((m) => m.name),
+      ["OPENAI_API_KEY"],
+      "ADC covers Gemini; nothing covers the judgment key",
+    );
+  } finally { cleanup(policiesDir); cleanup(home); }
 });
 
 test("--check-creds returns ok:true when required env vars are present", () => {

@@ -35,6 +35,16 @@ import { fileURLToPath } from "node:url";
 import { createConnection } from "node:net";
 import { platform } from "node:os";
 import { OFF_LIMITS_DEFAULT } from "./lib/off-limits.mjs";
+// The Gemini credential question is already answered, correctly, in
+// verify-setup.mjs. Importing it keeps one answer instead of two that
+// disagree — see ALTERNATIVE_DOORS below for what the disagreement was.
+// Importing is side-effect-free: that file guards its own CLI entry point.
+import {
+  adcPath,
+  inspectCredentialFile,
+  vertexCredentialState,
+  hasGeminiCredentials,
+} from "../codex/verify-setup.mjs";
 
 export { OFF_LIMITS_DEFAULT };
 
@@ -380,6 +390,47 @@ function envFix(name) {
   return `export ${name}=...`;
 }
 
+/**
+ * Env vars that are ONE OF TWO DOORS to a tier, not a hard requirement.
+ *
+ * `auth: { env: GEMINI_API_KEY }` is the AI Studio door, and the policy files
+ * say so on the line directly above it: "AI Studio door. Unset → adapter falls
+ * through to Vertex ADC, same rates." verify-setup.mjs's hasGeminiCredentials
+ * and credential-discovery.mjs's flavor scan have both always accepted either
+ * door. Only this checker read `auth.env` as mandatory, so a machine with live
+ * application-default credentials and no API key was told to go get an API key
+ * — for a tier that was already working. That surfaced twice: once as a false
+ * blocker in setup, and once as $mmo-codex:policy refusing to revalidate a
+ * policy that was already persisted and running.
+ *
+ * Anything not listed here stays a hard requirement, which is correct: the
+ * judgment tier's OPENAI_API_KEY has no second door (a ChatGPT seat is a
+ * different policy, not another way into the same one).
+ */
+const ALTERNATIVE_DOORS = {
+  GEMINI_API_KEY: "gemini",
+  // credential-discovery.mjs scans this as an AI Studio door too. No shipped
+  // policy names it today; listed so one that does inherits the right rule.
+  GOOGLE_API_KEY: "gemini",
+};
+
+/**
+ * Whether some Gemini door is open, by exactly the rule verify-setup.mjs
+ * applies. File- and env-based rather than a `gcloud` subprocess, so it
+ * matches what the dispatch path will actually find at run time and stays
+ * cheap enough to call per missing var.
+ */
+function geminiDoorState(env = process.env) {
+  const vertex = vertexCredentialState({
+    env,
+    serviceAccountFile: env.GOOGLE_APPLICATION_CREDENTIALS
+      ? inspectCredentialFile(env.GOOGLE_APPLICATION_CREDENTIALS)
+      : null,
+    adcFile: inspectCredentialFile(adcPath()),
+  });
+  return { open: hasGeminiCredentials({ env, vertex }), vertex };
+}
+
 function checkCredsFor(policyName) {
   const path = join(POLICIES_DIR, policyName + ".yaml");
   if (!existsSync(path)) {
@@ -391,7 +442,31 @@ function checkCredsFor(policyName) {
   }
   const missing = [];
   for (const envName of info.required_env) {
-    if (!process.env[envName]) missing.push({ kind: "env", name: envName, fix: envFix(envName) });
+    if (process.env[envName]) continue;
+
+    // A var with a second door is only missing when BOTH doors are shut.
+    if (ALTERNATIVE_DOORS[envName] === "gemini") {
+      const { open, vertex } = geminiDoorState();
+      if (open) continue;
+      const broken = vertex?.state === "broken";
+      missing.push({
+        kind: "env",
+        name: envName,
+        // Two ways in, so the fix names both. Consumers that print `fix`
+        // verbatim (see plugin/skills/policy/SKILL.md) need no change.
+        fix:
+          `${envFix(envName)}  — or open the other door: gcloud auth application-default login` +
+          (broken ? `  (a Google credential IS configured but is unusable: ${vertex.detail})` : ""),
+        alternative: {
+          kind: "vertex_adc",
+          fix: "gcloud auth application-default login",
+          reason: broken ? vertex.detail : "no Google application-default credential found",
+        },
+      });
+      continue;
+    }
+
+    missing.push({ kind: "env", name: envName, fix: envFix(envName) });
   }
   if (info.requires_vertex_adc) {
     const p = probeVertexAdc();

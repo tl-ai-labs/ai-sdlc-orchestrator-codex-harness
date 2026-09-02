@@ -114,6 +114,12 @@ Parse the JSON.
   subscription, say so plainly: `gpt-seat-plus-flash` reaches the same model through the seat and
   needs no key, at the cost of a modeled rather than metered judgment figure.
 
+  `GEMINI_API_KEY` is never reported on its own: it is the AI Studio door to a tier that Google
+  Cloud application-default credentials also open, so it appears only when BOTH are shut, and its
+  `fix` names both. An entry carrying an `alternative` field is a two-door case — offer the user
+  the choice rather than pushing them at the API key. Never tell someone to buy a key for a tier
+  whose other door is already open.
+
 # Shape 3 — `--policy=<name>`: silent set
 
 ```bash
