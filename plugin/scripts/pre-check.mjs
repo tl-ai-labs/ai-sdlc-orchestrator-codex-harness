@@ -20,7 +20,7 @@
  *   6. Report              — this script (writes .sdlc/pre-check-status.json
  *                            when --report or --run is complete).
  *
- * The status file is cached — subsequent /mmo:brownfield invocations
+ * The status file is cached — subsequent $mmo-codex:brownfield invocations
  * check it and skip smoke steps whose inputs haven't changed (staleness
  * = baseline changed, plugin version changed, or --recheck flag passed).
  *

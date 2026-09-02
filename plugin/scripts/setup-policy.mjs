@@ -7,7 +7,7 @@
  * launched it. So this script does the coupling: snapshot policies before →
  * launch server + browser → wait for user to save → diff to find the
  * new/modified policy → write its name to the current project's
- * .sdlc/project.json as `default_policy`. Both /mmo:greenfield and /mmo:brownfield
+ * .sdlc/project.json as `default_policy`. Both $mmo-codex:greenfield and $mmo-codex:brownfield
  * read that field via session-hydrate.
  *
  * Flow is hybrid on purpose:
@@ -370,8 +370,13 @@ function probeClaudeCli() {
 }
 
 function envFix(name) {
-  if (name === "ANTHROPIC_API_KEY") return "export ANTHROPIC_API_KEY=sk-ant-...  (get one from console.anthropic.com)";
+  if (name === "OPENAI_API_KEY") return "export OPENAI_API_KEY=...  (get one from platform.openai.com/api-keys)";
   if (name === "GEMINI_API_KEY") return "export GEMINI_API_KEY=...  (get one from aistudio.google.com/apikey)";
+  // Deliberately no ANTHROPIC_API_KEY branch (D9). The carried Anthropic
+  // policies are non-selectable replay fixtures, so this should be
+  // unreachable for them — but if one is ever picked by hand, the generic
+  // line below is the right answer. Telling someone to go obtain an
+  // Anthropic key is the one thing codex setup must never do.
   return `export ${name}=...`;
 }
 
@@ -404,7 +409,7 @@ function checkCredsFor(policyName) {
 // A brownfield run mid-flight has a policy pinned into its provenance and
 // task packets already dispatched under it. Changing default_policy
 // underneath would surface as inconsistent telemetry rows and confused
-// resumers, so /mmo:policy change refuses until the run reaches a
+// resumers, so $mmo-codex:policy change refuses until the run reaches a
 // terminal state. session-hydrate.mjs treats `complete`/`aborted` as
 // terminal; we accept `completed` and `failed` as well since callers may
 // spell it either way.
@@ -509,7 +514,7 @@ async function interactiveFlow(resolved, args) {
   const { added, modified } = diffPolicies(before);
   // Strip the .yaml extension — `default_policy` in project.json is a policy
   // *name* (`opus-only`, `opus-plus-flash`), not a filename. Downstream
-  // consumers (session-hydrate, MCP policy loader, /mmo:policy print) all
+  // consumers (session-hydrate, MCP policy loader, $mmo-codex:policy print) all
   // treat it as the bare stem; the old single-candidate branch left the
   // extension on, producing `default_policy="foo.yaml"` and 404s downstream.
   const candidates = [...added, ...modified].map((f) => f.replace(/\.ya?ml$/, ""));

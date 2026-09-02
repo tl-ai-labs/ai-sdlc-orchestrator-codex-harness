@@ -5,7 +5,7 @@
  * compact JSON payload the orchestrator uses to produce a one-line
  * "SDLC: N prior runs (last: <intent>, <age>); baseline <state>; <resume>"
  * marker at session start (and to make the correct routing decision on
- * first /mmo:brownfield invocation — normal task vs resume interrupted setup
+ * first $mmo-codex:brownfield invocation — normal task vs resume interrupted setup
  * vs first-time-in-this-repo).
  *
  * Purely a reader. Never writes state, never mutates anything.

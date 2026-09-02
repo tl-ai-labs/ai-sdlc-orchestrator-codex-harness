@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Provenance writer for `/mmo:revert` (ticket §14.6).
+ * Provenance writer for `$mmo-codex:revert` (ticket §14.6).
  *
  * The orchestrator calls this around every Write/Edit in a brownfield run so the
  * revert command can restore the pre-run state. Schema matches the reader in
