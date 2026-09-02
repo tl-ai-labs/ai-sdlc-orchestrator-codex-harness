@@ -44,6 +44,10 @@ import {
   skillLinkState,
   linkSkills,
   nextStepsBanner,
+  policyAdapters,
+  observePolicy,
+  DEFAULT_POLICY,
+  SEAT_POLICY,
 } from "../../plugin/codex/verify-setup.mjs";
 import { readMmoSelectFile, writeMmoSelectFile } from "../../plugin/codex/mmoSelect.mjs";
 
@@ -183,7 +187,23 @@ test("probeCodexLogin recognizes 'Not logged in' — must not false-positive on 
   assert.equal(result.loggedIn, false);
 });
 
+test("probeCodexLogin reads the status off stderr — codex-cli 0.152.1 puts it there, stdout empty", () => {
+  const fakeRun = () => ({ status: 0, stdout: "", stderr: "Logged in using ChatGPT\n" });
+  const result = probeCodexLogin(fakeRun);
+  assert.equal(result.loggedIn, true, "a working ChatGPT seat must not be reported as logged out");
+  assert.match(result.detail, /Logged in using ChatGPT/);
+});
+
+test("probeCodexLogin still reads 'Not logged in' when it arrives on stderr", () => {
+  const fakeRun = () => ({ status: 0, stdout: "", stderr: "Not logged in\n" });
+  assert.equal(probeCodexLogin(fakeRun).loggedIn, false);
+});
+
 // ── evaluate(): the decision table ───────────────────────────────────────
+
+// A metered policy, since that is what an unconfigured project falls back to.
+const METERED_POLICY = { name: DEFAULT_POLICY, selected: true, path: "/p.yaml", usesOpenAiKey: true };
+const SEAT_POLICY_STATE = { name: SEAT_POLICY, selected: true, path: "/s.yaml", usesOpenAiKey: false };
 
 const HEALTHY = {
   nodeMajor: 22,
@@ -192,6 +212,7 @@ const HEALTHY = {
   hasNodeModules: true,
   hasDist: true,
   env: { OPENAI_API_KEY: "sk-x", GEMINI_API_KEY: "g-x" },
+  policy: METERED_POLICY,
 };
 
 test("evaluate: a fully healthy install passes with no problems", () => {
@@ -240,12 +261,43 @@ test("evaluate: missing node_modules / dist are both blocking", () => {
   assert.ok(state2.problems.some((p) => p.id === "mcp-build" && p.severity === "blocking"));
 });
 
-test("evaluate: missing OPENAI_API_KEY is BLOCKING, not a warning (D9 — no in-session escape hatch)", () => {
+test("evaluate: missing OPENAI_API_KEY blocks on a policy that bills it", () => {
   const state = evaluate({ ...HEALTHY, env: { GEMINI_API_KEY: "g-x" } });
   const p = state.problems.find((p) => p.id === "openai-key");
   assert.ok(p, "openai-key problem must be reported");
   assert.equal(p.severity, "blocking");
   assert.equal(state.ok, false);
+  // The way out must be named, not just the key shop.
+  assert.match(p.fix, new RegExp(SEAT_POLICY));
+});
+
+test("evaluate: missing OPENAI_API_KEY is NOT a problem under the seat policy — it names no openai adapter", () => {
+  const state = evaluate({ ...HEALTHY, env: { GEMINI_API_KEY: "g-x" }, policy: SEAT_POLICY_STATE });
+  assert.equal(state.problems.some((p) => p.id === "openai-key"), false);
+  assert.equal(state.ok, true);
+});
+
+test("evaluate: an unselected policy is reported as the default it would fall back to, still blocking", () => {
+  const state = evaluate({
+    ...HEALTHY,
+    env: { GEMINI_API_KEY: "g-x" },
+    policy: { ...METERED_POLICY, selected: false },
+  });
+  const p = state.problems.find((p) => p.id === "openai-key");
+  assert.equal(p.severity, "blocking");
+  assert.match(p.message, /has not chosen a policy/);
+  assert.match(p.message, new RegExp(DEFAULT_POLICY));
+});
+
+test("evaluate: an unreadable policy downgrades the key check to a warning, not a false block", () => {
+  const state = evaluate({
+    ...HEALTHY,
+    env: { GEMINI_API_KEY: "g-x" },
+    policy: { name: "custom", selected: true, path: "/nope.yaml", usesOpenAiKey: null },
+  });
+  const p = state.problems.find((p) => p.id === "openai-key");
+  assert.equal(p.severity, "warning");
+  assert.equal(state.ok, true, "an unknown policy must not fail an otherwise-healthy install");
 });
 
 test("evaluate: no ANTHROPIC_API_KEY check exists at all (D9)", () => {
@@ -500,4 +552,70 @@ test("linkSkills never deletes a real directory someone else put in .agents/skil
       "the other author's file must survive",
     );
   } finally { fx.cleanup(); }
+});
+
+// ── policy resolution: which policies actually bill OPENAI_API_KEY ───────
+//
+// These run against the shipped policy files rather than fixtures. The
+// question the check asks — "does this policy name the openai adapter" — is
+// answered by a regex over YAML, so if a policy is ever restructured or an
+// adapter renamed, the check would silently stop finding it and report a
+// metered policy as key-free. That failure is invisible until a run aborts
+// mid-phase, so it is worth pinning to the real files.
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const SHIPPED_PLUGIN_ROOT = join(REPO_ROOT, "plugin");
+
+test("policyAdapters pulls every adapter id out of a models block", () => {
+  const yaml = [
+    "models:",
+    "  - id: gpt",
+    "    adapter: openai   # trailing comment must not be captured",
+    "  - id: flash",
+    "    adapter: mcp:model-dispatch",
+  ].join("\n");
+  assert.deepEqual(policyAdapters(yaml), ["openai", "mcp:model-dispatch"]);
+});
+
+test("policyAdapters returns nothing for empty or absent input rather than throwing", () => {
+  assert.deepEqual(policyAdapters(""), []);
+  assert.deepEqual(policyAdapters(null), []);
+});
+
+test("the shipped gpt-plus-flash really does route judgment through the openai adapter", () => {
+  const state = observePolicy(SHIPPED_PLUGIN_ROOT, mkdtempSync(join(tmpdir(), "no-project-")));
+  assert.equal(state.name, DEFAULT_POLICY, "an unconfigured project falls back to the default");
+  assert.equal(state.selected, false);
+  assert.equal(state.usesOpenAiKey, true);
+});
+
+test("the shipped gpt-seat-plus-flash names no openai adapter — the whole point of it", () => {
+  const root = mkdtempSync(join(tmpdir(), "seat-project-"));
+  mkdirSync(join(root, ".sdlc"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "project.json"), JSON.stringify({ default_policy: SEAT_POLICY }));
+
+  const state = observePolicy(SHIPPED_PLUGIN_ROOT, root);
+  assert.equal(state.name, SEAT_POLICY);
+  assert.equal(state.selected, true);
+  assert.equal(state.usesOpenAiKey, false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a policy name with no file behind it is 'unknown', not 'needs no key'", () => {
+  const root = mkdtempSync(join(tmpdir(), "bogus-project-"));
+  mkdirSync(join(root, ".sdlc"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "project.json"), JSON.stringify({ default_policy: "no-such-policy" }));
+
+  const state = observePolicy(SHIPPED_PLUGIN_ROOT, root);
+  assert.equal(state.usesOpenAiKey, null, "absence of a file is not evidence of absence of a key requirement");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a malformed project.json falls back to the default instead of throwing", () => {
+  const root = mkdtempSync(join(tmpdir(), "bad-json-"));
+  mkdirSync(join(root, ".sdlc"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "project.json"), "{ not json");
+
+  assert.equal(observePolicy(SHIPPED_PLUGIN_ROOT, root).name, DEFAULT_POLICY);
+  rmSync(root, { recursive: true, force: true });
 });

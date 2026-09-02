@@ -60,10 +60,19 @@ test("a blocked setup reports its verdict through the exit code, not just on scr
   assert.equal(r.status, 1, "a caller checking only the exit code must see the block");
 });
 
-test("the wizard names OPENAI_API_KEY as required, with no in-session fallback", () => {
+test("the wizard blames the policy for the key requirement, and names the keyless alternative", () => {
+  // This repo has no .sdlc/project.json, so the wizard resolves the default
+  // metered policy — which really does bill the key, so the block is correct.
+  // What it must not do is present the key as unconditional: a ChatGPT seat
+  // plus gpt-seat-plus-flash runs the same models without one.
   const r = runWizard({ OPENAI_API_KEY: "" });
   assert.match(r.stdout, /OPENAI_API_KEY is not set/);
-  assert.match(r.stdout, /no in-session fallback/i, "the D9 consequence must be stated, not implied");
+  assert.match(r.stdout, /policy 'gpt-plus-flash' bills it/, "the reason must name the policy");
+  assert.match(r.stdout, /gpt-seat-plus-flash/, "the way out must be on screen, not only in the docs");
+  assert.ok(
+    !/no in-session fallback/i.test(r.stdout),
+    "the old claim that nothing covers the judgment tier is false since the seat policy landed",
+  );
 });
 
 test("the wizard never mentions Anthropic (D9)", () => {

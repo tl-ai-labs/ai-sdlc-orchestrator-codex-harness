@@ -12,8 +12,11 @@
  *     every capability finding in docs/verification/p1-codex-runtime.md is
  *     gated on.
  *   - ANTHROPIC_API_KEY reporting is gone entirely (D9) and OPENAI_API_KEY
- *     takes its place — as a hard requirement rather than a soft one, since
- *     no in-session mode covers the judgment tier here.
+ *     takes its place — required only by the policies that actually bill it.
+ *     It was a flat requirement until gpt-seat-plus-flash arrived; that
+ *     policy runs judgment work on a ChatGPT seat through `codex exec` and
+ *     needs no key, so the wizard now asks the policy rather than assuming.
+ *     See the same reasoning at the `openai-key` check in verify-setup.mjs.
  *   - The final step no longer copies `.md` files into `./.claude/{commands,
  *     agents}/` and writes `.mcp.json`. Codex has no equivalent per-project
  *     discovery directory; the bridge is registered with `codex mcp add`
@@ -43,6 +46,8 @@ import {
   mcpPaths,
   MIN_CODEX_VERSION,
   AGENT_WORKER_SELECT,
+  observePolicy,
+  SEAT_POLICY,
 } from "../plugin/codex/verify-setup.mjs";
 import { writeMmoSelectFile } from "../plugin/codex/mmoSelect.mjs";
 
@@ -128,13 +133,25 @@ if (!cli.present) {
 step("Credentials");
 const env = process.env;
 
+// Whether the key is needed at all depends on the policy this project would
+// run — only the ones naming the `openai` adapter bill it.
+const policy = observePolicy(PLUGIN_ROOT, ROOT);
+const policyLabel = policy.selected ? `policy '${policy.name}'` : `default policy '${policy.name}'`;
+
 if (env.OPENAI_API_KEY) {
   ok("OPENAI_API_KEY is set — the judgment tier can dispatch.");
+} else if (policy.usesOpenAiKey === false) {
+  ok(`No OPENAI_API_KEY, and the ${policyLabel} does not need one.`);
+  hint("Judgment work runs on your ChatGPT seat via `codex exec`, on the codex login checked above.");
+  hint("Cost caveat: seat-billed judgment cost is modeled from tokens, not metered. Do not publish it as a bill.");
+} else if (policy.usesOpenAiKey === null) {
+  warn(`OPENAI_API_KEY is not set, and ${policy.path} could not be read to tell whether it is needed.`);
+  hint("If that policy routes judgment work through the openai adapter, every run halts at preflight.");
 } else {
-  fail("OPENAI_API_KEY is not set.");
+  fail(`OPENAI_API_KEY is not set, and the ${policyLabel} bills it.`);
   hint("Every judgment phase (requirements, design, planning, both reviews) dispatches through it.");
-  hint("There is no in-session fallback: without it, preflight halts every run.");
   hint("Get a key at https://platform.openai.com/api-keys and export it.");
+  hint(`Or, on a ChatGPT subscription, switch to '${SEAT_POLICY}' — same model and effort pin, no key.`);
   blocked = true;
 }
 

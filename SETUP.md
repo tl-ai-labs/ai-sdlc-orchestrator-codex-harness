@@ -73,13 +73,35 @@ node plugin/codex/verify-setup.mjs --fix
 
 Two tiers need credentials, for different reasons.
 
-**The judgment tier (GPT) — required.** Export `OPENAI_API_KEY`. This one is blocking: every
-judgment-tier dispatch goes through the OpenAI adapter, so without it no policy can run. There
-is no in-session fallback the way a ChatGPT subscription covers the driver.
+**The judgment tier (GPT) — depends on your policy.** There are two ways to pay for it, and
+which one you pick decides whether you need a key at all.
+
+| Policy (see §5) | Judgment tier reaches GPT via | `OPENAI_API_KEY` |
+|---|---|---|
+| `gpt-plus-flash` (default) | the OpenAI API, metered per call | **required** — runs halt at preflight without it |
+| `gpt-seat-plus-flash` | a local `codex exec` on your ChatGPT seat | not used at all |
+
+On the metered path, export the key:
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
+
+On a ChatGPT subscription with no API key, pick the seat policy instead — same model, same
+reasoning-effort pin, same routing rules:
+
+```bash
+node plugin/scripts/setup-policy.mjs --policy=gpt-seat-plus-flash
+```
+
+The trade-off is in the cost figures, not the output: codex reports token counts but no money,
+so judgment-tier cost on the seat is **modeled** from tokens rather than metered, and reports
+keep it out of the vendor total. Use `gpt-plus-flash` for anything whose numbers get published.
+Note also that a full run then draws judgment work from the same monthly seat allowance as the
+conductor.
+
+`verify-setup.mjs` reads the policy this project would actually run before deciding whether a
+missing key is a blocker — so if it reports one, the message names the policy responsible.
 
 **The mechanical tier (Gemini Flash) — required by the default policy.** Either a
 `GEMINI_API_KEY`, or Vertex credentials (`GOOGLE_APPLICATION_CREDENTIALS` pointing at a service

@@ -18,13 +18,16 @@
  *     check was already blocking on the whole harness being unusable
  *     without it; codex's ChatGPT-seat/API-key split means presence and
  *     login are genuinely two different failure modes.
- *   - `anthropic-key` (warning) → `openai-key` (blocking) — D9: no Anthropic
- *     credential anywhere in this harness, and unlike the source's
- *     ANTHROPIC_API_KEY (where a Claude Code subscription covers the
- *     "estimated" in-session mode without it), the judgment worker here has
- *     no in-session escape hatch — every judgment-tier dispatch goes through
- *     the openai adapter (Document A section 3), so a missing key blocks
- *     every policy, not just vendor-billed ones.
+ *   - `anthropic-key` (warning) → `openai-key` (policy-dependent) — D9: no
+ *     Anthropic credential anywhere in this harness. This began as an
+ *     unconditional blocker, on the reasoning that every judgment-tier
+ *     dispatch goes through the openai adapter (Document A section 3) and so
+ *     a missing key blocks every policy. `gpt-seat-plus-flash` ended that:
+ *     it reaches the same model at the same effort pin through `codex exec`
+ *     on a ChatGPT seat and names no `openai` adapter, so it needs no key.
+ *     The check now reads the policy that would actually run — blocking when
+ *     that policy bills the key, silent when it does not, and a warning when
+ *     the policy file cannot be read.
  *   - The MMO_SELECT persistence mechanism (--enable-agent/--disable-agent)
  *     drops the `.claude/settings.json` + `.mcp.json` round-trip entirely.
  *     Codex has no per-project settings file the way Claude Code's
@@ -460,13 +463,69 @@ export function probeCodexCli(run = spawnSync) {
  * `codex login status`'s exact wording ("Logged in using ChatGPT" /
  * "Not logged in") per docs/verification/p1-codex-runtime.md checks 2-3.
  * Never reads or prints ~/.codex/auth.json itself (D7) — parses only this
- * command's own stdout.
+ * command's own output.
+ *
+ * BOTH streams, deliberately. The verification doc read that line off stdout
+ * on the build it was written against; codex-cli 0.152.1 prints it to stderr
+ * and leaves stdout empty. Reading stdout alone therefore reported a working
+ * ChatGPT seat as logged out — a blocking failure on a healthy install. The
+ * wording is what identifies the state, so take it from wherever it lands.
  */
 export function probeCodexLogin(run = spawnSync) {
   const result = run("codex", ["login", "status"], { encoding: "utf8" });
   if (result.error || result.status !== 0) return { loggedIn: false, detail: null };
-  const out = String(result.stdout ?? "").trim();
-  return { loggedIn: /logged in/i.test(out) && !/not logged in/i.test(out), detail: out };
+  const out = [result.stdout, result.stderr]
+    .map((stream) => String(stream ?? "").trim())
+    .filter(Boolean)
+    .join("\n");
+  return { loggedIn: /logged in/i.test(out) && !/not logged in/i.test(out), detail: out || null };
+}
+
+/**
+ * The policy run.mjs falls back to when a project has not chosen one. Sync
+ * by hand with DEFAULT_POLICY in run.mjs (same pre-`npm ci` constraint as
+ * adcPath — this script cannot import the driver's module graph).
+ */
+export const DEFAULT_POLICY = "gpt-plus-flash";
+
+/** The subscription variant of the default: same models, no metered key. */
+export const SEAT_POLICY = "gpt-seat-plus-flash";
+
+/**
+ * Adapter ids named by a policy's `models:` block. A regex, not a YAML
+ * parse, for the pre-`npm ci` reason above — and all this check needs to
+ * know is whether the string `openai` appears as an adapter.
+ */
+export function policyAdapters(yamlText) {
+  return [...String(yamlText ?? "").matchAll(/^\s*adapter:\s*([^\s#]+)/gm)].map((m) => m[1]);
+}
+
+/**
+ * Which policy this project would actually run, and whether that policy
+ * bills OPENAI_API_KEY.
+ *
+ *   usesOpenAiKey: true   → some tier routes through the `openai` adapter
+ *                  false  → none does (gpt-seat-plus-flash reaches the same
+ *                           model through `codex exec` on the ChatGPT seat)
+ *                  null   → the policy file could not be read, so unknown
+ *
+ * `selected: false` means there is no .sdlc/project.json yet — the driver
+ * would fall back to DEFAULT_POLICY, so that is the one worth checking.
+ */
+export function observePolicy(pluginRoot, projectRoot = process.cwd(), read = readFileSync) {
+  let chosen = null;
+  try {
+    chosen = JSON.parse(read(join(projectRoot, ".sdlc", "project.json"), "utf8")).default_policy ?? null;
+  } catch { /* no project.json, or unreadable — the default is what would run */ }
+
+  const selected = typeof chosen === "string" && chosen.length > 0;
+  const name = selected ? chosen : DEFAULT_POLICY;
+  const path = join(pluginRoot, "config", "policies", `${name}.yaml`);
+  try {
+    return { name, selected, path, usesOpenAiKey: policyAdapters(read(path, "utf8")).includes("openai") };
+  } catch {
+    return { name, selected, path, usesOpenAiKey: null };
+  }
 }
 
 // ─── decision logic ─────────────────────────────────────────────────────
@@ -487,6 +546,7 @@ export function evaluate({
   hasGcloud = true,
   agentWorker = null,
   skills = null,
+  policy = null,
 }) {
   const problems = [];
 
@@ -580,17 +640,35 @@ export function evaluate({
     });
   }
 
-  // D9: no in-session escape hatch for the judgment worker — every phase
-  // dispatches through the openai adapter regardless of policy, so this is
-  // blocking, unlike the source's warning-level ANTHROPIC_API_KEY.
-  if (!realEnv.OPENAI_API_KEY) {
+  // D9 left no Anthropic credential here, and this check began life as the
+  // unconditional blocker its replacement note described: "every judgment-tier
+  // dispatch goes through the openai adapter, so a missing key blocks every
+  // policy". That stopped being true when gpt-seat-plus-flash landed — it
+  // routes judgment work to the same model, at the same effort pin, through a
+  // `codex exec` subprocess on the ChatGPT seat, and names no `openai` adapter
+  // anywhere. So ask the policy that would actually run, rather than assuming.
+  if (!realEnv.OPENAI_API_KEY && policy?.usesOpenAiKey !== false) {
+    const unknown = !policy || policy.usesOpenAiKey === null;
     problems.push({
       id: "openai-key",
-      severity: "blocking",
-      message:
-        "OPENAI_API_KEY is not set. The judgment worker dispatches through the openai adapter on every " +
-        "policy — there is no in-session mode that covers it the way a Claude Code subscription once did.",
-      fix: `Get a key at https://platform.openai.com/api-keys and put it in ${ENV_ADVICE}.`,
+      severity: unknown ? "warning" : "blocking",
+      message: unknown
+        ? "OPENAI_API_KEY is not set, and the policy that would run" +
+          (policy ? ` ('${policy.name}') could not be read from ${policy.path}` : " could not be determined") +
+          " — so whether this install needs a key is unknown. If it routes judgment work through the " +
+          "openai adapter, every phase will abort at its first dispatch."
+        : "OPENAI_API_KEY is not set, and " +
+          (policy.selected
+            ? `this project's policy '${policy.name}'`
+            : `this project has not chosen a policy, so a run falls back to the default '${policy.name}', which`) +
+          " routes judgment work through the metered openai adapter. Every judgment-tier phase would abort " +
+          "at its first dispatch.",
+      fix:
+        `Get a key at https://platform.openai.com/api-keys and put it in ${ENV_ADVICE}. ` +
+        `Or, if you have a ChatGPT subscription, switch to '${SEAT_POLICY}' (run $mmo-codex:policy) — same ` +
+        "model, same effort pin, judgment work on your seat through the codex CLI and no key at all. The " +
+        "trade-off is cost reporting, not output: seat-billed judgment cost is modeled from token counts " +
+        "rather than metered, and is kept out of the vendor total.",
     });
   }
 
@@ -752,6 +830,7 @@ function observe(pluginRoot, env = process.env, projectRoot = process.cwd()) {
     env: effectiveEnv,
     agentWorker: observeAgentWorker(pluginRoot, effectiveEnv),
     skills: skillLinkState(pluginRoot, projectRoot),
+    policy: observePolicy(pluginRoot, projectRoot),
   };
 }
 
