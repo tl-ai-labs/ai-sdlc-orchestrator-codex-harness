@@ -335,6 +335,232 @@ codex exec --json -m gpt-5.6-terra -c model_reasoning_effort="high" \
   -- "Reply with exactly the word: OK" </dev/null
 ```
 
+## Custom prompts are deprecated — the command surface ships as skills (2026-09-01)
+
+Both port documents assume the 13 `/mmo:*` command files become "Codex prompts" in
+`~/.codex/prompts/*.md`. Checked against codex's own official manual before building them
+(fetchable via the `openai-docs` system skill; cached at
+`/tmp/openai-docs-cache/codex-manual.md`, section "Custom Prompts"):
+
+> Custom prompts are deprecated. Use skills for reusable instructions that Codex can invoke
+> explicitly or implicitly.
+
+Three consequences, all favouring skills:
+
+- **Prompts cannot ship in the repository.** The manual: they "live in your local Codex home
+  directory… so they're not shared through your repository." A command surface that every user
+  has to hand-install into their own `~/.codex/prompts/` is not a command surface this project
+  can distribute. Skills ship inside the plugin.
+- **Skills are a superset of what prompts did.** "The model first sees skill metadata… It loads
+  the complete instructions when the user's request matches the skill **or the user invokes it
+  directly**." Direct invocation is preserved; implicit matching is added.
+- **The manifest already declares them.** `plugin/.codex-plugin/plugin.json` carries
+  `"skills": "./skills/"`, so the command skills are distributed by the existing install route
+  with no extra machinery.
+
+Recorded because it changes what Document A section 7's "13 command files → Codex prompts" row
+should produce, and because building against a deprecated surface would have shipped a command
+layer users could not install from the repo.
+
+For reference, the deprecated format (verified in the same section, not used here):
+`~/.codex/prompts/<name>.md`, top-level `.md` only, YAML frontmatter with `description:` and
+`argument-hint:`, placeholders `$1`–`$9` / `$ARGUMENTS` / named `$UPPERCASE`, invoked as
+`/prompts:<name>`, and requiring a codex restart to load. `codex exec` does not expand slash
+commands at all — they are an interactive-surface feature, which is why this could not be
+exercised headlessly here.
+
+## How codex discovers and names skills — measured, not assumed (2026-09-01)
+
+Having decided the command surface ships as skills, three things had to be settled before
+writing 13 files: where codex looks for them, what the model actually sees, and how they are
+addressed. `codex debug prompt-input` renders the model-visible prompt as JSON and costs
+nothing, so all of this was measured rather than inferred.
+
+**What the model sees.** A `<skills_instructions>` block listing a "skill roots" table (`r0`,
+`r1`, …) and then one flat line per skill:
+
+```
+### Available skills
+- imagegen: Generate or edit raster images when … (file: r0/imagegen/SKILL.md)
+```
+
+Only `name` and `description` reach the model up front; the body is loaded on selection. This
+is why descriptions must be short and front-loaded — the manual caps the initial list at 2% of
+the context window (8,000 chars when unknown) and "shortens skill descriptions first".
+
+**Roots, at repo root, with nothing installed:**
+
+| Probe | Root | Rendered name |
+| --- | --- | --- |
+| baseline, `plugin/skills/` only | `r0` = `~/.codex/skills/.system` | our skills absent entirely |
+| `.agents/skills/mmoprobe/` | `r1` = `<repo>/.agents/skills` | `mmoprobe` |
+| `.agents/skills/pipeline` → symlink into `plugin/skills/pipeline` | `r1` | **`mmo-codex:pipeline`** |
+
+Three findings, each of which would have been wrong if assumed:
+
+1. **`plugin/skills/` is not scanned from a checkout.** The manifest's `"skills": "./skills/"`
+   is a packaging declaration; it makes skills available once the plugin is *installed*. Working
+   in a clone of this repo — which is how every run in this document was done, and how a
+   contributor will work — codex does not see them. `codex plugin list --json` confirmed
+   `{"installed": [], "available": []}` throughout.
+2. **`.agents/skills` at the repo root is scanned**, and works on this machine's awkward path
+   (`/mnt/c/…/TL ai labs/…`, WSL, spaces). Symlinks in it are followed, as the manual states.
+3. **Codex namespaces a plugin's skills by the plugin name, automatically.** The symlinked
+   skill rendered as `mmo-codex:pipeline` purely because `.codex-plugin/plugin.json` is an
+   ancestor of the symlink's target — with the plugin not installed. So the addressable surface
+   is `$mmo-codex:greenfield`, and skill `name:` fields stay bare (`name: greenfield`). An
+   `mmo-` prefix would render as `mmo-codex:mmo-greenfield`.
+
+Invocation is `$<name>` (or the `/skills` picker), per the manual: "In Codex CLI or the IDE
+extension, run `/skills` or type `$` to mention a skill." Not `/mmo:greenfield` — that was the
+Claude harness's slash-command surface, and `codex exec` does not expand slash commands at all.
+
+The plugin keeps the name `mmo-codex` rather than being renamed to `mmo` to reproduce the
+source's exact `mmo:` namespace: both harnesses' plugins can be installed side by side, and a
+shared `mmo` name would collide.
+
+Consequence for setup: finding 1 is a real gap, since the skills are useless to a contributor
+working in a clone. Tracked below.
+
+## `allow_implicit_invocation: false` hides a skill from the model entirely (2026-09-01)
+
+The 13 command skills split into two groups. Five are general entry points
+(`greenfield`, `brownfield`, `setup`, `policy`, `revert`). Eight each start a full, billable,
+multi-phase SDLC run (`pass` plus the seven job aliases `bugfix`, `docs`, `test`, `refactor`,
+`deps`, `feature-new`, `feature-extend`), and must never fire because the user happened to say
+the word "test" or "docs". Those eight carry `agents/openai.yaml`:
+
+```yaml
+policy:
+  allow_implicit_invocation: false
+```
+
+The manual describes this as suppressing implicit matching, with "explicit `$skill` invocation
+still works". Measured effect is stronger than that wording suggests: the flagged skills are
+**removed from the model-visible skill list altogether**. `codex debug prompt-input` at repo
+root listed 7 of our 15 skills — exactly the 7 without an `openai.yaml`. Confirmed as causation
+rather than budget truncation two ways: the whole `<skills_instructions>` block was 4,286 chars
+against the 8,000-char floor with no truncation notice, and moving `bugfix/agents/openai.yaml`
+aside made `mmo-codex:bugfix` appear immediately.
+
+Kept anyway, because nothing is actually unreachable. `brownfield` stays visible, and
+`brownfield-guide` — the manual it delegates to — covers all seven intents itself, so "fix this
+bug in my repo" still routes correctly through the visible entry point, which then asks which
+job type. The seven aliases are shortcuts for users who already know the name; the flag costs
+discoverability of a shortcut and buys immunity from a spend-incurring misfire.
+
+**Resolved — explicit invocation confirmed by measurement (2026-09-01).** This was initially
+recorded as the one claim resting on documentation rather than measurement, because `$`-mentions
+and `/skills` are interactive-TUI features and `codex exec` expands neither. It turns out the
+picker's data source is reachable without the TUI: the app-server protocol exposes a
+`skills/list` method (found via `codex app-server generate-json-schema --out <dir>`, which also
+lists `skills/config/write` and `skills/extraRoots/set`).
+
+Driving `codex app-server` over stdio with `initialize` then
+`skills/list {"cwds": ["<repo>"], "forceReload": true}` returns all 21 skills visible from this
+repo, and every one of the 8 flagged skills is present with `"enabled": true`:
+
+```json
+{ "name": "mmo-codex:bugfix",
+  "description": "Fix a defect in an existing repository — reproduce, diagnose, fix, add a regression test…",
+  "path": ".../plugin/skills/bugfix/SKILL.md", "scope": "repo", "enabled": true, "pluginId": null }
+```
+
+So the two surfaces genuinely differ, and the manual's wording is exact: `allow_implicit_invocation:
+false` removes a skill from the **model's** prompt list while leaving it in the **user's** picker.
+Nothing in the command surface is unreachable. Cost: nothing — no model call is involved.
+
+## Two failures a real reference run found that no unit test could (2026-09-01)
+
+Both surfaced only under a full Workforce Ops run on `gpt-seat-plus-flash`, and both presented
+as `exit=0` with no error — the most misleading shape this kind of failure can take.
+
+### 1. The MCP client gave up before its own adapter did
+
+Every judgment dispatch failed with `MCP error -32001: Request timed out`, ~60s in. Preflight
+passed, the model was answering, nothing was wrong with connectivity.
+
+`driverClient.ts` called `client.callTool({name, arguments})` with no options, so the MCP SDK's
+**60-second default request timeout** applied. Meanwhile `gpt-seat-plus-flash` sets
+`worker_timeout_sec: 540`, and `CodexCliAdapter` defaults to 600 — the adapter shells out to a
+nested `codex exec` at `model_reasoning_effort=high`, which routinely takes minutes. So the
+client abandoned each call while the adapter kept working for another eight minutes.
+
+Fixed with an explicit `{ timeout }` on every `callTool`, defaulting to 900s. The invariant is
+now tested against the actual `worker_timeout_sec` values in the shipped policy files rather than
+a hardcoded number: a client that gives up before its own adapter turns a slow answer into a
+phantom vendor failure.
+
+Worth recording separately: the conductor handled this **correctly**. It retried with a narrower
+packet, then halted before Gate 1 and reported *"Both requirements-model dispatches timed out and
+produced neither an artifact nor telemetry. I did not author a substitute, so no later phase
+ran."* The D1 rule — the conductor authors no shipped content — held under exactly the pressure
+that would have made fabricating a requirements document the convenient move.
+
+### 2. One `codex exec` turn is not enough for a real project
+
+With the timeout fixed, the run got through requirements, design, both gates and into codegen —
+then the turn simply ended. `exit=0`, no error, six phases still to go.
+
+The turn had accumulated **2,908,195 input tokens (2,814,976 of them cached)**. It hit the
+session's context ceiling. The driver was built around a single `codex exec` invocation, so
+there was nowhere for the work to continue.
+
+`codex exec resume <session-id>` exists and continues the same session. The driver now takes the
+`thread_id` from the `thread.started` event and resumes until the pipeline writes `SUMMARY.md`,
+capped by `--max-turns` (default 12). Three details that matter:
+
+- **Completion is an artifact, not a phrase.** `SUMMARY.md` is what phase 9 is contractually
+  required to write. A model can improvise "the run is complete"; it cannot improvise that file.
+- **The accumulated stream is what gets priced.** Reading only the last turn's stdout would
+  silently drop the cost and events of every earlier turn.
+- **A resumed turn keeps the pin, the sandbox and the write-contract hook.** One that dropped the
+  hook would write unguarded; one that dropped the pin would answer on a different model.
+
+The manifest gained `codex_invocations` (how many times the driver called codex, distinct from
+`driver_turns`) and `completed` (whether the pipeline actually reached its final phase), because
+a run that exhausts its turns still exits 0 with useful artifacts and must not be mistaken for a
+finished one.
+
+## The harness forbade a write it also instructs (2026-09-02)
+
+The completed Workforce Ops reference run reported, in its own final summary, that "`eslint`,
+build, E2E, and startup verification were not run; copying the test fixture to `.env` was denied
+and not retried."
+
+The guard log confirms it — one denial in the whole run, out of 120 decisions:
+
+```
+decisions: {'allow': 119, 'deny': 1}
+  DENY: /tmp/p6c/.env | .env matches always-off-limits pattern ".env"
+```
+
+Both halves of the contradiction shipped:
+
+- `plugin/skills/pipeline/SKILL.md` phase 7 instructs the greenfield test bootstrap
+  `if [ -f .env.test ] && [ ! -f .env ]; then cp .env.test .env; fi` — required for any app
+  whose codegen emitted a validating config module, or it cannot boot to be tested.
+- `OFF_LIMITS_DEFAULT` carries a blanket `.env`, and the pre-contract safety net enforces it
+  before any contract exists — which is exactly the greenfield case.
+
+So the run did the right thing (the guard held, the conductor reported the gap honestly) while
+the pipeline could not complete its own verification step. The cost is quiet: tests still ran and
+passed, so nothing looked broken, but build and E2E were skipped.
+
+Narrowed the pre-contract branch to allow **creating** a bare `.env` that does not exist. What
+the rule protects is unchanged, and each part was verified against the real hook:
+
+| Case | Decision |
+| --- | --- |
+| `cp .env.test .env`, greenfield, no `.env` present | allow |
+| same, but `.env` already exists | **deny** — a real `.env` is never overwritten |
+| `.env.production`, `.env.local` | **deny** — variants stay blocked |
+| `cp .env.test .env` under an active brownfield contract | **deny** |
+
+Brownfield never reaches this branch at all (it has a contract), and its own phase 7 refuses the
+copy outright, so the path that guards a user's real secrets is untouched. What is now permitted
+is a greenfield run creating a throwaway fixture inside the tree it just generated.
+
 ## Outstanding before this file is closed out
 
 1. Vertex ADC or `GEMINI_API_KEY` — unblocks check 8 (mechanical-tier dispatch) and the Gemini

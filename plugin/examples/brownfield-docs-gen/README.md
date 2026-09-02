@@ -21,7 +21,7 @@ The `docs` intent turns that into: a project README and JSDoc-annotated `auth.js
 ```bash
 cd plugin/examples/brownfield-docs-gen
 # In Claude Code, in this directory:
-/mmo:brownfield
+$mmo-codex:brownfield
 # Pick intent: docs
 # Confirm scope at Gate 0: src/auth.js + README.md
 # The pipeline writes docs/auth.md, adds JSDoc to src/auth.js, updates README.md

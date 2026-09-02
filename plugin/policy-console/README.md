@@ -2,9 +2,7 @@
 
 A local web page for choosing and customizing an AI-SDLC routing policy — which model runs each
 phase, and thinking capacity per phase. Reads and writes real files in
-[plugin/config/policies/](../config/policies/). See
-[docs/specs/custom-policy-and-thinking-config.md](../../docs/specs/custom-policy-and-thinking-config.md)
-for the full spec.
+[plugin/config/policies/](../config/policies/).
 
 ## What is this
 
@@ -19,7 +17,7 @@ One HTML page + a ~350-line Node http server. No framework, no build step, one n
 ## Run it
 
 You do not normally run this directly. `plugin/scripts/setup-policy.mjs` (called by the shepherd
-during setup, and by the `/mmo:policy change` command later) starts the server on the first free
+during setup, and by the `$mmo-codex:policy change` command later) starts the server on the first free
 port ≥3000, opens your browser, and writes the picked/authored policy name to
 `.sdlc/project.json.default_policy` in the current project.
 

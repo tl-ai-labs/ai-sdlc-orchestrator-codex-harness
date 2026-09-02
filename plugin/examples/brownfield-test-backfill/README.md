@@ -19,7 +19,7 @@ cd plugin/examples/brownfield-test-backfill
 npm install
 npm test    # exits 0 with "no test files found" — no tests to run yet
 
-# /mmo:brownfield  →  test
+# $mmo-codex:brownfield  →  test
 ```
 
 ## Expected outputs

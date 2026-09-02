@@ -18,7 +18,7 @@ src/
 ```bash
 cd plugin/examples/brownfield-refactor
 npm install && npm test
-# /mmo:brownfield  →  refactor
+# $mmo-codex:brownfield  →  refactor
 ```
 
 ## Expected outputs

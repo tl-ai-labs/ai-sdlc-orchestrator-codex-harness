@@ -2,29 +2,34 @@
 
 > **For:** writing your own project brief in the section layout the pipeline expects. **Also see:** [tutorial-first-run.md](tutorial-first-run.md) · [running.md](running.md).
 
-`/mmo:pass` reads the brief file at the path it is given. The
-requirements phase and the `architect` subagent expect the section headings
-listed below; the wording under each is up to the author.
+The driver reads the brief file at the path it is given. The requirements and
+architecture phases expect the section headings listed below; the wording
+under each is up to the author.
 
 Copy this file, fill in the sections, save it anywhere in the repo (or
-outside it), and point the command at the new path:
+outside it), and point the driver at the new path:
 
 ```
-/mmo:pass --auth=vendor --study=<your-study-id> --run-id=pass1 path/to/your-brief.md
+node plugin/codex/run.mjs \
+  --brief=path/to/your-brief.md \
+  --project-root=. \
+  --output-dir=.sdlc \
+  --policy=gpt-plus-flash \
+  --run-id=pass1
 ```
 
-Output lands in `examples/<your-study-id>/passes/<run-id>/`. `--study` groups
-telemetry, packets, and manifests for the new project separately from the
-Workforce Ops case that ships with the repo.
+Output lands under `--output-dir` (default `.sdlc/`): telemetry, task packets,
+and the run manifest. Give each run its own `--run-id` so they stay separate.
+Add `--dry-run` to render the conductor prompt and exit without spending
+anything, and `--gates=auto-approve` for an unattended run.
 
 Related: [running.md](running.md#bring-your-own-brief) for the full workflow,
 [methodology.md](methodology.md) for what the pipeline records.
 
-`/mmo:greenfield` runs from wherever you are — usually an empty folder — and
-`docs/` is not copied on install, so the wizard carries the same section set
-inline in `plugin/commands/greenfield.md`. **A heading changed here must be
-changed there too**; `tools/test/command.test.mjs` compares the two and fails
-if they drift.
+`$mmo-codex:greenfield` runs from wherever you are — usually an empty folder —
+and `docs/` is not copied on install, so that skill carries the same section
+set inline in `plugin/skills/greenfield/SKILL.md`. **A heading changed here
+must be changed there too.**
 
 ---
 

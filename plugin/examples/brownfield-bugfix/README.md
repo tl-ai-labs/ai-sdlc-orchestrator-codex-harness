@@ -25,7 +25,7 @@ npm install
 npm test    # 1 failing test: "returns 400 when password missing"
 
 # In Claude Code:
-/mmo:brownfield
+$mmo-codex:brownfield
 # Pick intent: bugfix
 # The pipeline runs reproduce (already reproduced!) → diagnose → fix → regression test
 ```
