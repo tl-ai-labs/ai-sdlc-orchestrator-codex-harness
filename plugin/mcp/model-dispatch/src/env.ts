@@ -20,17 +20,23 @@ export function isUnusableEnvValue(value: string | undefined): boolean {
 
 /**
  * Variables plugin.json declares as pass-throughs, and the only ones we touch.
- * Kept in sync by hand with DECLARED_ENV in plugin/scripts/verify-setup.mjs.
+ * Kept in sync by hand with DECLARED_ENV in plugin/codex/verify-setup.mjs.
+ * No ANTHROPIC_API_KEY (D9) — the official codex policy's judgment worker
+ * bills OPENAI_API_KEY via the openai adapter instead.
  */
 export const PLUGIN_DECLARED_ENV = [
   "GEMINI_API_KEY",
-  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
   "GOOGLE_APPLICATION_CREDENTIALS",
   "GOOGLE_CLOUD_PROJECT",
   "GOOGLE_CLOUD_LOCATION",
   "GEMINI_BACKEND",
   "MMO_SELECT",
-  "SDLC_SELECT", // MMO-D8 compat shim — pre-rename installs still export this
+  // No SDLC_SELECT. The source declares it as a compat shim for installs
+  // predating its own sdlc→mmo rename; this repo is new, so no such install
+  // exists to be compatible with, and the manifest does not declare it.
+  // server.ts keeps its own read-side shim (carried engine code, harmless) —
+  // this list is only about which manifest pass-throughs get sanitized.
   "GEMINI_WORKER_PYTHON",
   "MMO_LOG_LEVEL",
   "MMO_VERBOSE",

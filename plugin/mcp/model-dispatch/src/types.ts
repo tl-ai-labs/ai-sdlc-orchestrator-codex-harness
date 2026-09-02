@@ -69,6 +69,17 @@ export interface TelemetryEvent {
    * because events written before this field existed lack it.
    */
   model_id?: string;
+  /**
+   * Where the cost figure on this event actually comes from. `vendor` —
+   * real vendor-reported usage from a dispatched call. `estimated` — a
+   * direct-tier call priced by the character-count heuristic because no
+   * vendor usage was available. `modeled` — codex-specific: the driver
+   * session itself never dispatches through this server (D1's conductor
+   * role), so its cost is derived after the fact from `codex exec --json`
+   * turn usage at the pinned rates, not from a live vendor call. Optional
+   * because events written before this field existed lack it.
+   */
+  provenance?: "vendor" | "estimated" | "modeled";
   routed_by: "orchestrator" | "fallback" | "manual";
   routing: {
     policy_name: string;
@@ -227,6 +238,19 @@ export interface ExecutionResult {
     output_reasoning?: number;
   };
   cost_usd: number;
+  /**
+   * Where THIS result's cost came from, when it differs from the adapter's
+   * usual source. `ModelAdapter.costProvenance` describes an adapter's normal
+   * case; this overrides it per call.
+   *
+   * It exists because an adapter that normally reports real vendor usage can
+   * still fail to get it on a given call — a response with no `usage` block,
+   * a failure path priced from `estimateTokens`. Without a per-result field,
+   * those counts get stamped `vendor` from the adapter's static declaration,
+   * which publishes a calculation as a bill. That is precisely what the
+   * provenance taxonomy exists to prevent.
+   */
+  cost_provenance?: "vendor" | "estimated" | "modeled";
   latency_ms: number;
   cache_hit: boolean;
   success: boolean;

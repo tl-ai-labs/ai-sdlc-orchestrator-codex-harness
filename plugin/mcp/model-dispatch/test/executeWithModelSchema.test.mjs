@@ -59,3 +59,54 @@ test("the validator is wired into the execute_with_model handler", () => {
   const handlerIdx = src.indexOf('"execute_with_model"');
   assert.ok(handlerIdx > 0 && validateIdx > handlerIdx, "validator call must be inside execute_with_model handler");
 });
+
+test("execute_with_model reads provenance from the adapter, defaulting to vendor", () => {
+  // Document A section 8: the telemetry event gains a provenance field
+  // (vendor/estimated/modeled). Most adapters report real vendor-metered
+  // usage, but the codex-cli path can only derive cost from token counts —
+  // codex reports no money at all — so the value must come FROM the adapter
+  // rather than being hardcoded. Hardcoding "vendor" here would publish a
+  // calculation as a bill, which is the one thing this field exists to stop.
+  const src = readFileSync(SERVER, "utf8");
+  const handlerIdx = src.indexOf('"execute_with_model"');
+  const endIdx = src.indexOf('case "simulate_policy"', handlerIdx);
+  assert.ok(handlerIdx > 0 && endIdx > handlerIdx);
+  const region = src.slice(handlerIdx, endIdx);
+
+  // Three levels, in this order. The per-result label has to come first:
+  // an adapter that normally meters can still fail to get usage back on one
+  // call and price it from estimateTokens, and consulting only the adapter's
+  // static declaration would stamp that estimate `vendor`.
+  assert.match(
+    region, /provenance:\s*result\.cost_provenance\s*\?\?/,
+    "a result that labelled its own cost must win over the adapter's default",
+  );
+  assert.match(
+    region, /result\.cost_provenance\s*\?\?\s*adapter\.costProvenance/,
+    "provenance must fall back to the adapter, not be assumed",
+  );
+  assert.match(
+    region, /costProvenance\s*\?\?\s*\(?["']vendor["']/,
+    "an adapter that declares nothing must still default to vendor",
+  );
+});
+
+test("an adapter that had to estimate labels the result, rather than inheriting vendor", () => {
+  // The bug this locks out: GeminiFlashAdapter and OpenAIAdapter both fall
+  // back to estimateTokens when the vendor sends no usage block, but neither
+  // declares a costProvenance — so before this, those estimates reached the
+  // report as vendor-metered spend. Assert each adapter both tracks the
+  // fallback and stamps it.
+  for (const file of ["GeminiFlashAdapter.ts", "OpenAIAdapter.ts"]) {
+    const src = readFileSync(new URL(`../src/adapters/${file}`, import.meta.url), "utf8");
+    assert.match(src, /let usedEstimate = false;/, `${file}: must track whether it estimated`);
+    assert.match(
+      src, /usedEstimate\s*\?\s*\{\s*cost_provenance:\s*["']estimated["']/,
+      `${file}: must stamp cost_provenance when it estimated`,
+    );
+    assert.match(
+      src, /finalizeResult\([^)]*"vendor_error",\s*true\)/s,
+      `${file}: a priced failure path is always an estimate`,
+    );
+  }
+});

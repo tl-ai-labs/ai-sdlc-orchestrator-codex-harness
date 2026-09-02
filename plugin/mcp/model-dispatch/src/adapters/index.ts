@@ -5,6 +5,7 @@ import { BuiltinAnthropicAdapter } from "./BuiltinAnthropicAdapter.js";
 import { AntigravityWorkerAdapter } from "./AntigravityWorkerAdapter.js";
 import { ClaudeCliAdapter } from "./ClaudeCliAdapter.js";
 import { OpenAIAdapter } from "./OpenAIAdapter.js";
+import { CodexCliAdapter } from "./CodexCliAdapter.js";
 import { log } from "../log.js";
 
 /**
@@ -16,6 +17,10 @@ import { log } from "../log.js";
  *                        OAuth). Dormant for the same reason as builtin-anthropic.
  *   openai             → GPT, direct SDK (needs OPENAI_API_KEY). The judgment
  *                        worker in the official codex policy (D9).
+ *   codex-cli          → GPT, via a local `codex exec` subprocess on a ChatGPT
+ *                        seat's login. Same model, no API key — but codex
+ *                        reports no cost, so its figures are modeled rather
+ *                        than metered. Fallback for running without a key.
  *   mcp:model-dispatch → Gemini as a model (one completion call)
  *   antigravity-worker → Gemini as an agent (Antigravity SDK session)
  */
@@ -28,6 +33,7 @@ export function createAdapter(config: ModelConfig): ModelAdapter {
   if (config.adapter === "builtin-anthropic") return new BuiltinAnthropicAdapter(config);
   if (config.adapter === "claude-cli") return new ClaudeCliAdapter(config);
   if (config.adapter === "openai") return new OpenAIAdapter(config);
+  if (config.adapter === "codex-cli") return new CodexCliAdapter(config);
   if (config.adapter === "mcp:model-dispatch") return new GeminiFlashAdapter(config);
   if (config.adapter === LEGACY_GEMINI_ADAPTER_ID) {
     if (!legacyAdapterIdWarned) {

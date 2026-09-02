@@ -61,7 +61,7 @@ test("returns a successful ExecutionResult with usage passthrough", async () => 
   assert.equal(out.success, true);
   assert.equal(out.terminal_reason, "success");
   assert.deepEqual(out.result, { ok: true });
-  assert.equal(out.tokens.input, 1000);
+  assert.equal(out.tokens.input, 600, "input is the FRESH count: 1000 total minus 400 cached");
   assert.equal(out.tokens.input_cached, 400);
   assert.equal(out.tokens.output, 50);
   assert.equal(out.tokens.output_reasoning, 20);
@@ -69,7 +69,9 @@ test("returns a successful ExecutionResult with usage passthrough", async () => 
   assert.equal(out.attempts.length, 1, "no output cap hit — one attempt");
   assert.equal(
     out.cost_usd,
-    (1000 / 1_000_000) * 2.0 + (400 / 1_000_000) * 0.2 + (50 / 1_000_000) * 12.0,
+    // fresh = 1000 total - 400 cached. OpenAI reports input_tokens
+    // inclusive of input_tokens_details.cached_tokens.
+    (600 / 1_000_000) * 2.0 + (400 / 1_000_000) * 0.2 + (50 / 1_000_000) * 12.0,
   );
 });
 
@@ -190,4 +192,71 @@ test("constructor throws when OPENAI_API_KEY is not set and no client is injecte
   } finally {
     if (original !== undefined) process.env.OPENAI_API_KEY = original;
   }
+});
+
+// ── cost provenance ──────────────────────────────────────────────────
+//
+// This adapter normally reports real vendor-metered usage and so declares no
+// costProvenance, inheriting `vendor` in server.ts. But it falls back to
+// estimateTokens whenever the vendor sends no usage — and an estimate
+// published as vendor-metered spend is exactly what the provenance taxonomy
+// exists to prevent. The result must say so itself.
+
+test("a metered response is not labelled — it inherits vendor, as it should", async () => {
+  const client = fakeClient(() => ({
+    status: "completed",
+    output_text: JSON.stringify({ ok: true }),
+    incomplete_details: null,
+    usage: {
+      input_tokens: 100,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 10,
+      output_tokens_details: { reasoning_tokens: 0 },
+    },
+  }));
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute(PACKET);
+  assert.equal(out.success, true);
+  assert.equal(
+    out.cost_provenance, undefined,
+    "a real metered call must not claim to be an estimate",
+  );
+});
+
+test("a response with no usage block is labelled estimated, not vendor", async () => {
+  // The exact hole: tokens here come from estimateTokens, and without the
+  // label they would be reported as money the vendor actually charged.
+  const client = fakeClient(() => ({
+    status: "completed",
+    output_text: JSON.stringify({ ok: true }),
+    incomplete_details: null,
+    usage: undefined,
+  }));
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute(PACKET);
+  assert.equal(out.success, true);
+  assert.ok(out.cost_usd > 0, "it still prices the call");
+  assert.equal(out.cost_provenance, "estimated", "…but must not present that price as metered");
+});
+
+test("a usage block missing only output_tokens is still an estimate", async () => {
+  const client = fakeClient(() => ({
+    status: "completed",
+    output_text: JSON.stringify({ ok: true }),
+    incomplete_details: null,
+    usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 0 } },
+  }));
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute(PACKET);
+  assert.equal(out.cost_provenance, "estimated");
+});
+
+test("a vendor error prices the attempt but labels it estimated", async () => {
+  const client = fakeClient(() => {
+    throw Object.assign(new Error("500 upstream"), { status: 500 });
+  });
+  const out = await new OpenAIAdapter(BASE_CONFIG, { client }).execute(PACKET);
+  assert.equal(out.success, false);
+  assert.equal(out.terminal_reason, "vendor_error");
+  assert.equal(
+    out.cost_provenance, "estimated",
+    "a failure priced from the prompt was never a vendor measurement",
+  );
 });

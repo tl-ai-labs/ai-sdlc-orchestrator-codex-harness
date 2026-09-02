@@ -22,11 +22,34 @@ import { fileURLToPath } from "node:url";
 
 const DEFAULT_SERVER_ENTRY = join(dirname(fileURLToPath(import.meta.url)), "server.js");
 
+/**
+ * How long to let one bridge tool call run before giving up.
+ *
+ * This MUST exceed the largest `worker_timeout_sec` any shipped policy sets,
+ * or the client abandons a call the adapter is still working on. The MCP SDK
+ * defaults to 60s, which is far below what a real dispatch takes: the
+ * `codex-cli` adapter shells out to a nested `codex exec` at
+ * `model_reasoning_effort=high` and `gpt-seat-plus-flash` allows it 540s.
+ *
+ * That mismatch is not theoretical — it killed the first Workforce Ops
+ * reference run. Both requirements dispatches failed with
+ * `MCP error -32001: Request timed out` at 60s while the adapter kept working
+ * for another eight minutes, and the conductor correctly refused to author
+ * substitute content, so the run halted before Gate 1 having produced
+ * nothing. The symptom is badly misleading: it reads as a vendor or
+ * connectivity failure, but preflight passes and the model is answering fine.
+ *
+ * 900s = 540s policy ceiling + headroom for process spawn and JSON handling.
+ */
+export const DEFAULT_TOOL_TIMEOUT_MS = 900_000;
+
 export interface BridgeClientOptions {
   /** Override the server entry point — tests point this at a fixture server. */
   serverPath?: string;
   /** Extra environment variables layered onto the spawned server's process.env. */
   env?: Record<string, string>;
+  /** Per-call timeout in ms. See DEFAULT_TOOL_TIMEOUT_MS before lowering it. */
+  toolTimeoutMs?: number;
 }
 
 export interface BridgeClient {
@@ -61,9 +84,15 @@ export async function connectBridge(options: BridgeClientOptions = {}): Promise<
   const client = new Client({ name: "codex-driver", version: "0.1.0" });
   await client.connect(transport);
 
+  const timeout = options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
+
   return {
     async callTool(name: string, args: Record<string, unknown>) {
-      const result = await client.callTool({ name, arguments: args });
+      // `resetTimeoutOnProgress` is deliberately NOT set: this server sends no
+      // progress notifications, so it would have no effect and would only
+      // suggest a liveness signal that does not exist. `maxTotalTimeout` is
+      // left unset for the same reason — `timeout` is already the total.
+      const result = await client.callTool({ name, arguments: args }, undefined, { timeout });
       const text = extractText(result as any);
       if ((result as any).isError) {
         throw new Error(`bridge tool '${name}' returned an error: ${text}`);

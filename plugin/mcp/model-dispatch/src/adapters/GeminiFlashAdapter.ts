@@ -99,6 +99,9 @@ export class GeminiFlashAdapter implements ModelAdapter {
     const wantsJson = packet.outputSchema && !(packet.outputSchema as any).__free_text__;
 
     const attempts: AttemptRecord[] = [];
+    // Set when any attempt has to price tokens the vendor did not report.
+    // Carried to finalizeResult so the result is labelled `estimated`.
+    let usedEstimate = false;
     let ceiling = Math.min(packet.budget.maxOutputTokens, absoluteCeiling);
 
     for (let attemptNumber = 1; attemptNumber <= MAX_DOUBLINGS + 1; attemptNumber++) {
@@ -130,7 +133,7 @@ export class GeminiFlashAdapter implements ModelAdapter {
           success: false,
           error: err?.message ?? String(err),
         });
-        return this.finalizeResult(attempts, null, cacheHit, "vendor_error");
+        return this.finalizeResult(attempts, null, cacheHit, "vendor_error", true);
       }
 
       const text = outcome.text;
@@ -141,13 +144,15 @@ export class GeminiFlashAdapter implements ModelAdapter {
       // Without this, cached tokens are billed twice.
       const cachedTokens =
         usage.cachedContentTokenCount ?? (cacheHit ? estimateTokens(this.cacheHeader) : 0);
+      if (usage.cachedContentTokenCount === undefined && cacheHit) usedEstimate = true;
       const promptTokens = usage.promptTokenCount ?? estimateTokens(userPrompt);
+      if (usage.promptTokenCount === undefined) usedEstimate = true;
       // Output = candidates + thoughts (see billedOutputTokens). Estimate
       // stands in only when the vendor sent no usage block at all.
-      const outputTokens =
-        usage.candidatesTokenCount === undefined && usage.thoughtsTokenCount === undefined
-          ? estimateTokens(text)
-          : billedOutputTokens(usage);
+      const missingOutputUsage =
+        usage.candidatesTokenCount === undefined && usage.thoughtsTokenCount === undefined;
+      if (missingOutputUsage) usedEstimate = true;
+      const outputTokens = missingOutputUsage ? estimateTokens(text) : billedOutputTokens(usage);
       const attemptTokens = {
         input: Math.max(0, promptTokens - cachedTokens),
         input_cached: cachedTokens,
@@ -177,7 +182,7 @@ export class GeminiFlashAdapter implements ModelAdapter {
         } catch {
           parsed = { raw: text };
         }
-        return this.finalizeResult(attempts, parsed, cacheHit, "success");
+        return this.finalizeResult(attempts, parsed, cacheHit, "success", usedEstimate);
       }
 
       const nextCeiling = Math.min(ceiling * 2, absoluteCeiling);
@@ -191,12 +196,13 @@ export class GeminiFlashAdapter implements ModelAdapter {
           atModelAbsolute
             ? "output_cap_at_model_absolute"
             : "output_cap_doubling_budget_exhausted",
+          usedEstimate,
         );
       }
       ceiling = nextCeiling;
     }
 
-    return this.finalizeResult(attempts, null, cacheHit, "output_cap_doubling_budget_exhausted");
+    return this.finalizeResult(attempts, null, cacheHit, "output_cap_doubling_budget_exhausted", usedEstimate);
   }
 
   private finalizeResult(
@@ -208,6 +214,13 @@ export class GeminiFlashAdapter implements ModelAdapter {
       | "output_cap_doubling_budget_exhausted"
       | "output_cap_at_model_absolute"
       | "vendor_error",
+    /**
+     * True when any attempt priced tokens from `estimateTokens` because the
+     * vendor sent no usage for them. The result must then say `estimated`,
+     * or server.ts falls back to this adapter's default of vendor-metered
+     * and publishes a guess as a measured bill.
+     */
+    usedEstimate = false,
   ): ExecutionResult {
     const totalTokens = attempts.reduce(
       (acc, a) => ({
@@ -230,6 +243,7 @@ export class GeminiFlashAdapter implements ModelAdapter {
       error: finalAttempt?.error,
       attempts,
       terminal_reason: terminalReason,
+      ...(usedEstimate ? { cost_provenance: "estimated" as const } : {}),
     };
   }
 }

@@ -62,7 +62,7 @@ function validateTaskPacket(raw: unknown): TaskPacket {
     });
     throw new Error(
       `execute_with_model: TaskPacket is missing required field${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}. ` +
-      `See plugin/mcp/model-dispatch/src/types.ts for the schema (or plugin/agents/orchestrator.md for the required-fields table).`,
+      `See plugin/mcp/model-dispatch/src/types.ts for the schema (or plugin/skills/pipeline/SKILL.md for the required-fields table).`,
     );
   }
   if (!Array.isArray(packet.inputs)) {
@@ -458,6 +458,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           task_id: packet.id,
           module: packet.module,
           model: modelName,
+          // Read from the adapter rather than assumed: most report real
+          // vendor-metered usage, but the codex-cli path can only derive
+          // cost from token counts (the CLI reports no money), and saying
+          // "vendor" over a calculation is the one thing the provenance
+          // field exists to prevent.
+          // The result's own label wins where it set one: an adapter that
+          // normally meters can still have had to estimate this particular
+          // call (no `usage` block came back, or it priced a failure from
+          // estimateTokens). Falling straight through to the adapter's static
+          // declaration would stamp those `vendor`.
+          provenance: result.cost_provenance ?? adapter.costProvenance ?? ("vendor" as const),
           routed_by: "orchestrator" as const,
           // Leaf id; the only field that distinguishes two leaves that share
           // a vendor model name (e.g. flash-completion vs flash-agsdk-worker).

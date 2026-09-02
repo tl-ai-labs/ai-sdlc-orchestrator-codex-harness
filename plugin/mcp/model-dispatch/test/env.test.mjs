@@ -96,9 +96,15 @@ test("every variable plugin.json declares is covered", async () => {
   // is the very mistake it exists to catch. There are three hand-maintained
   // copies of this list (plugin.json, env.ts, verify-setup.mjs), each in a
   // package that cannot import the others, so all three are pinned here.
+  //
+  // Codex port: the manifest moved from `.claude-plugin/plugin.json` to
+  // `.codex-plugin/plugin.json` and its schema is codex's own (verified
+  // against the spec shipped in codex's plugin-creator system skill, and
+  // against its validator) — but `mcpServers` with an env pass-through block
+  // exists in both, so this three-way check ports intact.
   const pluginJson = JSON.parse(
     readFileSync(
-      new URL("../../../.claude-plugin/plugin.json", import.meta.url),
+      new URL("../../../.codex-plugin/plugin.json", import.meta.url),
       "utf-8",
     ),
   );
@@ -108,7 +114,7 @@ test("every variable plugin.json declares is covered", async () => {
 
   assert.deepEqual([...PLUGIN_DECLARED_ENV].sort(), declaredInManifest);
 
-  const { DECLARED_ENV } = await import("../../../scripts/verify-setup.mjs");
+  const { DECLARED_ENV } = await import("../../../codex/verify-setup.mjs");
   assert.deepEqual([...DECLARED_ENV].sort(), declaredInManifest);
 });
 

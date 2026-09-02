@@ -65,6 +65,10 @@ export class OpenAIAdapter implements ModelAdapter {
     const effort = this.modelConfig.reasoning?.effort;
 
     const attempts: AttemptRecord[] = [];
+    // Set when an attempt has to price tokens the vendor did not report, so
+    // the result can be labelled `estimated` rather than inheriting this
+    // adapter's vendor-metered default.
+    let usedEstimate = false;
     let ceiling = Math.min(packet.budget.maxOutputTokens, absoluteCeiling);
 
     for (let attemptNumber = 1; attemptNumber <= MAX_DOUBLINGS + 1; attemptNumber++) {
@@ -119,15 +123,24 @@ export class OpenAIAdapter implements ModelAdapter {
           error: vendorError,
         };
         attempts.push(attempt);
-        return this.finalizeResult(attempts, null, false, "vendor_error");
+        return this.finalizeResult(attempts, null, false, "vendor_error", true);
       }
 
       const text = resp.output_text ?? "";
       const usage = resp.usage;
       const reasoningTokens = usage?.output_tokens_details?.reasoning_tokens ?? 0;
+      // OpenAI reports `input_tokens` INCLUSIVE of the cached subset, while
+      // computeCostUsd prices `input` and `input_cached` as disjoint buckets
+      // and sums them. Handing it the inclusive total bills every cached
+      // token twice. Anthropic's API reports these disjointly, which is why
+      // the carried adapter needs no such subtraction and this one does.
+      const cachedInput = usage?.input_tokens_details?.cached_tokens ?? 0;
+      if (!usage || usage.output_tokens === undefined) usedEstimate = true;
       const attemptTokens = {
-        input: usage?.input_tokens ?? estimateTokens(userPrompt + (stableBlock ?? "")),
-        input_cached: usage?.input_tokens_details?.cached_tokens ?? 0,
+        input: usage
+          ? Math.max(0, (usage.input_tokens ?? 0) - cachedInput)
+          : estimateTokens(userPrompt + (stableBlock ?? "")),
+        input_cached: cachedInput,
         output: usage?.output_tokens ?? estimateTokens(text),
         output_reasoning: reasoningTokens,
       };
@@ -152,7 +165,7 @@ export class OpenAIAdapter implements ModelAdapter {
         } catch {
           parsed = { raw: text };
         }
-        return this.finalizeResult(attempts, parsed, attemptTokens.input_cached > 0, "success");
+        return this.finalizeResult(attempts, parsed, attemptTokens.input_cached > 0, "success", usedEstimate);
       }
 
       const nextCeiling = Math.min(ceiling * 2, absoluteCeiling);
@@ -167,12 +180,13 @@ export class OpenAIAdapter implements ModelAdapter {
           atModelAbsolute
             ? "output_cap_at_model_absolute"
             : "output_cap_doubling_budget_exhausted",
+          usedEstimate,
         );
       }
       ceiling = nextCeiling;
     }
 
-    return this.finalizeResult(attempts, null, false, "output_cap_doubling_budget_exhausted");
+    return this.finalizeResult(attempts, null, false, "output_cap_doubling_budget_exhausted", usedEstimate);
   }
 
   private finalizeResult(
@@ -184,6 +198,8 @@ export class OpenAIAdapter implements ModelAdapter {
       | "output_cap_doubling_budget_exhausted"
       | "output_cap_at_model_absolute"
       | "vendor_error",
+    /** See ExecutionResult.cost_provenance — true when any attempt estimated. */
+    usedEstimate = false,
   ): ExecutionResult {
     const totalTokens = attempts.reduce(
       (acc, a) => ({
@@ -207,6 +223,7 @@ export class OpenAIAdapter implements ModelAdapter {
       error: finalAttempt?.error,
       attempts,
       terminal_reason: terminalReason,
+      ...(usedEstimate ? { cost_provenance: "estimated" as const } : {}),
     };
   }
 }

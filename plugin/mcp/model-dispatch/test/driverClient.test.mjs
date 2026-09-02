@@ -13,8 +13,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
 
-import { connectBridge } from "../dist/driverClient.js";
+import { connectBridge, DEFAULT_TOOL_TIMEOUT_MS } from "../dist/driverClient.js";
 
 test("load_policy reaches the real server and returns the official codex policy", async () => {
   const bridge = await connectBridge();
@@ -64,5 +65,46 @@ test("preflight_dispatch passes once a (dummy) OPENAI_API_KEY is present — con
 test("an unreachable server rejects connect() instead of hanging forever", async () => {
   await assert.rejects(
     () => connectBridge({ serverPath: "/nonexistent/path/to/server.js" }),
+  );
+});
+
+// ── the call timeout ─────────────────────────────────────────────────
+//
+// The first Workforce Ops reference run died here. `client.callTool` was
+// called with no options, so the MCP SDK's 60s default applied while
+// gpt-seat-plus-flash allows its adapter 540s. Both requirements dispatches
+// returned `MCP error -32001: Request timed out` at 60s with the adapter
+// still working, and the conductor — correctly refusing to author substitute
+// content — halted the run before Gate 1 having produced nothing.
+
+test("the client's per-call timeout exceeds every shipped policy's worker timeout", () => {
+  // The real invariant, checked against the policies rather than a constant:
+  // a client that gives up before its own adapter does turns a slow answer
+  // into a phantom vendor failure.
+  const policyDir = new URL("../../../config/policies/", import.meta.url);
+  const files = readdirSync(policyDir).filter((f) => f.endsWith(".yaml"));
+  assert.ok(files.length > 0, "there should be policies to check");
+
+  let worst = 0;
+  for (const file of files) {
+    const text = readFileSync(new URL(file, policyDir), "utf8");
+    for (const m of text.matchAll(/worker_timeout_sec:\s*(\d+)/g)) {
+      worst = Math.max(worst, Number(m[1]));
+    }
+  }
+  assert.ok(worst > 0, "at least one policy should set worker_timeout_sec");
+  assert.ok(
+    DEFAULT_TOOL_TIMEOUT_MS > worst * 1000,
+    `client timeout ${DEFAULT_TOOL_TIMEOUT_MS}ms must exceed the ${worst}s worst-case worker timeout`,
+  );
+});
+
+test("callTool passes an explicit timeout rather than inheriting the SDK default", () => {
+  // Source-level, because the 60s default is invisible at runtime until a
+  // call actually runs long — which only happens on a real paid dispatch.
+  const src = readFileSync(new URL("../src/driverClient.ts", import.meta.url), "utf8");
+  assert.match(
+    src, /callTool\(\s*\{[^}]*\}\s*,\s*undefined\s*,\s*\{\s*timeout\s*\}/s,
+    "callTool must be given a timeout in its RequestOptions",
   );
 });
