@@ -28,6 +28,8 @@ Look things up. Exact answers, exhaustive.
 
 | Doc | For |
 |---|---|
+| [Troubleshooting](troubleshooting.md) | Symptom → cause → fix, keyed by the message on screen. |
+| [Understanding output](understanding-output.md) | Reading the cost report, `telemetry.jsonl`, `provenance.json`, and `guard-decisions.jsonl`. |
 | [Codex runtime verification](verification/p1-codex-runtime.md) | Every runtime capability check this port rests on, with the pinned model, effort, sandbox and approval values, and the measurements behind each finding. |
 | [Pipeline state machine](../plugin/skills/pipeline/SKILL.md) | The states, gates, TaskPacket schema, telemetry contract, and per-phase prompts the driver follows. |
 
@@ -37,6 +39,7 @@ Reasoning-forward. Understand why the pieces are shaped the way they are.
 
 | Doc | For |
 |---|---|
+| [Architecture](architecture.md) | Who calls what, and why the driver calls the bridge rather than the model. Adapters, routing, the write contract, telemetry, install routes. |
 | [Methodology](methodology.md) | How tokens and costs are derived; why modeled and metered figures are reported separately and never summed. |
 
 ## For maintainers
@@ -46,4 +49,6 @@ Reasoning-forward. Understand why the pieces are shaped the way they are.
 
 ## What is not here yet
 
-The [Claude Code harness](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness) ships several docs this port has not written: architecture, troubleshooting, understanding-output, logging, the two-Gemini-paths comparison, and the four brownfield deep-dives. Their subject matter exists in this harness; the write-ups do not. Listing the gap is more useful than a set of links that go nowhere.
+The [Claude Code harness](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness) ships three docs this port has not written: `logging.md`, the two-Gemini-paths comparison, and the four brownfield deep-dives. Their subject matter exists here; the write-ups do not.
+
+The two-Gemini-paths comparison is blocked rather than merely unwritten — its whole value is measured numbers from the same brief down both doors, and that pair of runs has not happened on this harness. Writing it from the source's figures would be reporting the Claude harness's measurements as this one's.

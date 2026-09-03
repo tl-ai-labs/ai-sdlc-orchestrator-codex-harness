@@ -330,6 +330,9 @@ node tools/setup.mjs
 - [docs/running.md](docs/running.md) — the pipeline, policies, bringing your own brief
 - [docs/brief-template.md](docs/brief-template.md) — the section layout a brief needs
 - [docs/tutorial-first-run.md](docs/tutorial-first-run.md) — ten minutes from a fresh install to a completed pass
+- [docs/troubleshooting.md](docs/troubleshooting.md) — symptom → cause → fix, keyed by the message on screen
+- [docs/understanding-output.md](docs/understanding-output.md) — reading the cost report and the raw files a run leaves behind
+- [docs/architecture.md](docs/architecture.md) — who calls what, adapters, routing, the write contract, telemetry, install routes
 - [docs/methodology.md](docs/methodology.md) — how tokens and costs are recorded, and why modeled and metered are never summed
 - [docs/verification/p1-codex-runtime.md](docs/verification/p1-codex-runtime.md) — the Codex runtime capability checks this port is built on, with the pinned model, effort, sandbox and approval values, and the findings that shaped the architecture
 - [CONTRIBUTING.md](CONTRIBUTING.md) — branching model, style rules, how to submit
