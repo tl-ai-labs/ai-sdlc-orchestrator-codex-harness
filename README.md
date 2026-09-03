@@ -177,23 +177,27 @@ Framed by what you want to do, not by every provider that exists. The full matri
 
 You do not need to pick a Gemini door yourself — setup asks. You do not need to write a policy — `gpt-plus-flash` loads by default.
 
-## Setup
+## Setup — ask for it in plain words
 
-Install it as a plugin and the skills are available in every repository you work in:
+Nothing to clone, nothing to type by hand. Paste this into a codex session:
+
+```
+Set up this plugin from this repo - https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness
+```
+
+Codex follows [INSTALL.md](INSTALL.md): registers the marketplace, installs the plugin, builds the bundled MCP server, checks credentials, asks which policy this project should use, and reports where things stand. Approve the commands it asks to run — marketplace registration needs network, which the sandbox otherwise blocks.
+
+No new session is needed afterwards. Codex reads its configuration fresh on every invocation, so the skills are live as soon as the install finishes.
+
+Prefer to drive it yourself:
 
 ```bash
-codex plugin marketplace add https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness
+codex plugin marketplace add https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness.git
 codex plugin add mmo-codex@tilicho-ai-labs
+node "$(ls -d ~/.codex/plugins/cache/tilicho-ai-labs/mmo-codex/*/codex/verify-setup.mjs | tail -1)" --fix --project-root "$(pwd)"
 ```
 
-Then pick this project's policy and confirm the install:
-
-```bash
-node plugin/scripts/setup-policy.mjs --policy=gpt-plus-flash --project-root "$(pwd)"
-node plugin/codex/verify-setup.mjs --fix
-```
-
-`--fix` installs the bridge's dependencies and compiles it. Credentials, the Gemini door choice, and the policy picker are covered step by step in [SETUP.md](SETUP.md).
+`--fix` installs the bridge's dependencies and compiles it — `dist/` is not tracked, so a fresh install cannot dispatch until it is built. Credentials, the Gemini door choice, and the policy picker are covered step by step in [SETUP.md](SETUP.md).
 
 > **Dispatch needs an unsandboxed session.** The bridge is reached by spawning it and talking over pipes, and codex's sandbox denies piped stdio under both its default and `workspace-write` modes. Start codex with `codex -s danger-full-access`, or run the pipeline headlessly, where the driver spawns the bridge outside codex.
 
@@ -326,6 +330,7 @@ node tools/setup.mjs
 
 ## Documentation
 
+- [INSTALL.md](INSTALL.md) — the steps codex follows when asked to set this up in plain words
 - [SETUP.md](SETUP.md) — prerequisites, both install routes, credentials, both Gemini doors, the policy pick
 - [docs/running.md](docs/running.md) — the pipeline, policies, bringing your own brief
 - [docs/brief-template.md](docs/brief-template.md) — the section layout a brief needs

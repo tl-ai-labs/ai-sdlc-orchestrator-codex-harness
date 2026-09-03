@@ -5,6 +5,15 @@ One-time setup per machine, plus a per-project policy choice. Budget ten minutes
 Everything here is checkable: `node plugin/codex/verify-setup.mjs` reports exactly what is
 missing and how to fix it, and `--fix` repairs what can be repaired without asking.
 
+**You may not need this page.** To have codex do the install for you, paste this into a session:
+
+```
+Set up this plugin from this repo - https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness
+```
+
+It follows [INSTALL.md](INSTALL.md) and asks only where a decision is genuinely yours. Read on for
+the manual route, or to work inside a clone.
+
 ---
 
 ## 1. Prerequisites
