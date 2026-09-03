@@ -6,6 +6,62 @@ Two ways to run the pipeline, what the gates ask you, and what lands on disk.
 
 ---
 
+## Policies
+
+A policy decides which model each phase is routed to, and what the run costs. Three ship as
+selectable. `$mmo-codex:policy` prints the current one; `$mmo-codex:policy change` swaps it.
+
+### `gpt-plus-flash` — the policy of record
+
+Judgment phases (requirements, design, packet planning, senior review, security review) run on
+`gpt-5.6-terra` at reasoning effort `high`, dispatched through the OpenAI adapter as metered API
+calls. Mechanical phases (codegen, tests, docs) drop to Gemini 3.7 Flash.
+
+**Credentials:** `OPENAI_API_KEY`, plus a Gemini door — `GEMINI_API_KEY` or Google Cloud
+application-default credentials.
+
+**Cost reporting:** vendor-metered end to end.
+
+**When to pick it:** anything whose cost figures get published or compared. This is the default,
+and every published number for this harness comes from it.
+
+### `gpt-seat-plus-flash` — the same models, without an API key
+
+Identical routing and the same effort pin. Judgment work reaches GPT through a local `codex exec`
+subprocess on a ChatGPT seat instead of the metered API.
+
+**Credentials:** a logged-in codex (`codex login`), plus the same Gemini door. No `OPENAI_API_KEY`
+— the setup check will not ask for one under this policy.
+
+**Cost reporting:** judgment-tier cost is modeled from token counts rather than metered, because
+codex reports tokens but no money. Telemetry labels those events `modeled`, and the report keeps
+them out of the vendor total. See [methodology.md](methodology.md).
+
+**When to pick it:** developing against the harness, or running at all without a key. A full run
+then draws judgment work from the same monthly seat allowance as the conductor, so a long
+reference run is where a seat is most likely to run out mid-run.
+
+### `flash-agsdk-only` — the mechanical tier alone
+
+Every phase routes to Gemini 3.7 Flash through the Antigravity SDK agent worker.
+
+**Credentials:** Vertex application-default credentials — the agent path is ADC-only and has no
+API-key door — plus Python 3.10+.
+
+**When to pick it:** exercising the agent door, or measuring what the mechanical tier does
+unaided.
+
+The `opus-*` files under `../plugin/config/policies/` are replay fixtures carried from the Claude
+harness, not selectable policies. The picker excludes them, and no run in this harness dispatches
+to an Anthropic model.
+
+**The mechanical tier has two doors, and the policy file does not choose between them.** Gemini
+can be called as a model — one completion per packet — or as an agent that opens the working
+directory itself. Which one a run uses is a property of the *install*, picked once at setup, so
+the policy file stays a faithful record of how a run was priced and routed. Both doors reach the
+same model at the same rates; the `model_id` on each telemetry event is what says which ran.
+Details in [methodology.md](methodology.md#the-mechanical-tier-has-two-doors).
+
 ## Two shapes
 
 **Interactive — inside a codex session.** Type `$` to mention a skill, or `/skills` to browse:
@@ -177,3 +233,30 @@ each one.
 
 Give each run its own `--run-id` and its own `--output-dir`. Runs are not incremental — a second
 run over the same output directory overwrites the first.
+
+## Resuming a partial run
+
+Two different things are called resuming here, and only one of them is something you do.
+
+**Within a run, automatically.** One `codex exec` turn cannot finish a real project — it ends when
+the session hits its context ceiling, with exit 0 and no error. The driver resumes the same
+session until the pipeline writes `SUMMARY.md` or `--max-turns` (default 12) is reached. Nothing
+to do; a run that takes several turns is the normal case, not a fault.
+
+**After an interruption, by hand.** If the driver itself died — a killed terminal, a machine
+restart — pass the session id back:
+
+```bash
+node plugin/codex/run.mjs --resume=<session-id> --project-root=. --output-dir=.sdlc
+```
+
+The id is the one codex emits in its first `thread.started` event, recorded in the run's log.
+Without `--resume`, continuing means a fresh session that re-reads every artifact to work out
+what is already done. That is correct, and it pays again for context the old session still holds.
+
+**A gate that was open when the session died** is recovered separately: the conductor writes the
+pending gate to `.sdlc/local/state.json` before printing it, and session-hydrate re-prompts on the
+next invocation rather than treating the gate as answered.
+
+Telemetry is written incrementally, so an interrupted run leaves valid partial data in its output
+directory. Re-running with the same `--run-id` overwrites it — use a new id to keep it.

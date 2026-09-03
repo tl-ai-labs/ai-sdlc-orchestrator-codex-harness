@@ -8,6 +8,22 @@ One greenfield run, start to finish. About twenty minutes, most of it waiting.
 
 ---
 
+## What you'll need
+
+- **Node.js 20+** and the **Codex CLI 0.151.0 or newer**, logged in. Verify with `node --version`,
+  `codex --version`, and `codex login status`.
+- **A way to pay for the judgment tier.** Either an `OPENAI_API_KEY`, or a ChatGPT subscription
+  with the `gpt-seat-plus-flash` policy selected — see [running.md](running.md#policies) for which
+  to pick. The run below cost $0.5287 vendor-metered on `gpt-plus-flash`.
+- **A Gemini door for the mechanical tier.** A `GEMINI_API_KEY` from
+  [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey), or Google Cloud
+  application-default credentials from `gcloud auth application-default login`. Either one works;
+  the setup check accepts whichever is present.
+- **An unsandboxed codex session,** if you are running this from inside codex rather than from a
+  shell. Dispatch reaches the bridge over pipes to a child process, which codex's default sandbox
+  refuses — start with `codex -s danger-full-access`, or run the driver from a plain shell as
+  below.
+
 ## 1. Make an empty folder
 
 Greenfield writes a new application. Give it somewhere of its own — not the harness repo.
