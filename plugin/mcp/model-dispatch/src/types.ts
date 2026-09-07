@@ -76,10 +76,14 @@ export interface TelemetryEvent {
    * vendor usage was available. `modeled` — codex-specific: the driver
    * session itself never dispatches through this server (D1's conductor
    * role), so its cost is derived after the fact from `codex exec --json`
-   * turn usage at the pinned rates, not from a live vendor call. Optional
-   * because events written before this field existed lack it.
+   * turn usage at the pinned rates, not from a live vendor call. `none` — no
+   * model call was made at all: a phase the intent skipped, or one the
+   * conductor completed in-session without dispatching. Its zeros are facts
+   * rather than estimates, and its real token cost, where there is any,
+   * accrues to the driver loop. Optional because events written before this
+   * field existed lack it.
    */
-  provenance?: "vendor" | "estimated" | "modeled";
+  provenance?: "vendor" | "estimated" | "modeled" | "none";
   routed_by: "orchestrator" | "fallback" | "manual";
   routing: {
     policy_name: string;

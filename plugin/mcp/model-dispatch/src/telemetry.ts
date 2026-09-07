@@ -26,10 +26,32 @@ export function normalizeDirectTierEvent(
   return { ...ev, ts: now.toISOString(), latency_ms: null };
 }
 
+/**
+ * Read an append-only event log, skipping any line that will not parse.
+ *
+ * A run killed mid-write leaves a truncated final line, and this file is
+ * written incrementally precisely so an interrupted run keeps usable partial
+ * data (docs/running.md says so). Throwing on the partial line discarded
+ * every complete event before it and made manifest.json unbuildable — the
+ * opposite of the promise. Both sibling readers already skip: report.mjs's
+ * readJsonl returns null and filters, and event-reader.mjs's parseEventStream
+ * continues. This one was the outlier.
+ *
+ * Skipping is safe because every line is one independent event; a lost line
+ * costs that event, not the run.
+ */
 export function readEvents(jsonlPath: string): TelemetryEvent[] {
   if (!existsSync(jsonlPath)) return [];
-  const lines = readFileSync(jsonlPath, "utf-8").split("\n").filter(Boolean);
-  return lines.map((l) => JSON.parse(l) as TelemetryEvent);
+  const out: TelemetryEvent[] = [];
+  for (const line of readFileSync(jsonlPath, "utf-8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line) as TelemetryEvent);
+    } catch {
+      continue;
+    }
+  }
+  return out;
 }
 
 export interface Manifest {

@@ -223,3 +223,23 @@ test("--markdown renders tables instead of the box drawing", () => {
     assert.ok(!/┌/.test(out), "markdown output must not carry terminal box characters");
   } finally { cleanup(dir); }
 });
+
+test("a no-model-call phase is tagged '–', not '?' — ran-and-cost-nothing vs provenance-unknown", () => {
+  // provenance "none" is a phase that made no model call: skipped for the
+  // intent, or completed in-session. Its zeros are facts. Falling through to
+  // "?" would say the provenance is unknown, which is the opposite claim.
+  const dir = makeRun({
+    telemetry: [
+      event({ phase: "security_review", task_id: "sr", provenance: "none", input_tokens: 0, output_tokens: 0, cost_usd: 0 }),
+      event({ phase: "tests", task_id: "t1", provenance: undefined, input_tokens: 0, output_tokens: 0, cost_usd: 0 }),
+    ],
+  });
+  try {
+    const out = runReport(dir).stdout;
+    const noneRow = out.split("\n").find((l) => l.includes("security_review"));
+    const unknownRow = out.split("\n").find((l) => l.includes("tests"));
+    assert.match(noneRow, /–/, "a phase that made no model call must not read as unlabelled");
+    assert.match(unknownRow, /\?/, "a genuinely unlabelled event must still read as unknown");
+    assert.match(out, /no model call/, "the key must explain the new tag");
+  } finally { cleanup(dir); }
+});

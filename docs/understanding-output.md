@@ -30,8 +30,9 @@ The `Prov` column is the provenance of that phase's events:
 | `V` | vendor-metered — the vendor reported these tokens |
 | `E` | estimated — counted locally, not vendor-confirmed |
 | `M` | modeled — derived from token counts at the policy's pinned rates |
+| `–` | no model call — the phase was skipped for this intent, or the conductor completed it in-session. The zeros are facts, not estimates; any tokens it did consume were the conductor's and are counted in the driver loop. |
 | `~` | mixed within the phase |
-| `?` | unlabelled |
+| `?` | unlabelled — provenance genuinely unknown, which is not the same as `–` |
 
 ### Driver loop — modeled, not measured
 
@@ -72,7 +73,7 @@ One event per line. The fields that matter when reading by hand:
 |---|---|
 | `phase` | Pipeline phase — `requirements_analysis`, `codegen`, and so on. `driver_loop` marks a conductor turn rather than a dispatched packet. |
 | `model` / `model_id` | Which model ran, and through which door. On Gemini events this is what distinguishes the model door from the agent door. |
-| `provenance` | `vendor`, `estimated`, or `modeled`. Decides which report total the event lands in. |
+| `provenance` | `vendor`, `estimated`, `modeled`, or `none`. Decides which report total the event lands in. `none` marks a phase that made no model call at all. |
 | `input_tokens` / `input_tokens_cached` / `output_tokens` | Token counts. Input is **exclusive** of cached input — see below. |
 | `output_tokens_reasoning` | Reasoning tokens, where the vendor reports them separately. |
 | `cost_usd` | Derived at the pricing in the policy that ran. |
@@ -88,6 +89,21 @@ Written per run under `runs/<run-id>/`. For each touched file: path, whether it 
 ### `guard-decisions.jsonl`
 
 Brownfield only, and the only record of a refused write. A denied call leaves no trace in the Codex event stream, so a write that silently did not happen is explained here and nowhere else. Each line carries its own timestamp, the path, the decision, and the reason.
+
+## A phase with no row is a lost event
+
+Every phase leaves a row, including ones that made no model call. A phase the intent skipped, or
+one the conductor completed in-session rather than dispatching, is recorded as a zero-cost event
+with `provenance: "none"` and a reason explaining which.
+
+That is deliberate, and it was not always true. A refactor run whose extraction turned out to be
+already complete wrote both a senior review and a security review without dispatching either, and
+left a three-event file that read as truncated — there was no way to tell a skipped phase from a
+lost one. Now absence always means loss.
+
+The zeros on such a row do not mean the phase was free. Where it consumed tokens they were the
+conductor's own, and they are counted in the driver loop instead — which the run's `--reason`
+string says on the row itself.
 
 ## What is not here
 

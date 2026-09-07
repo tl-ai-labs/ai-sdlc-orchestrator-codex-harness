@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeDirectTierEvent, appendEvent, readEvents, buildManifest } from "../dist/telemetry.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -92,4 +92,47 @@ test("manifest run duration is real once events are normalized", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── readEvents: an interrupted run must keep its complete events ─────────
+//
+// telemetry.jsonl is append-only and written incrementally precisely so a
+// run killed mid-write leaves usable partial data (docs/running.md says so).
+// readEvents used to throw on the truncated final line, discarding every
+// complete event before it and making manifest.json unbuildable — the
+// opposite of the promise. Both sibling readers already skip: report.mjs's
+// readJsonl filters nulls, event-reader.mjs's parseEventStream continues.
+
+test("readEvents keeps complete events when a killed run left a truncated last line", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tel-trunc-"));
+  const path = join(dir, "telemetry.jsonl");
+  try {
+    const good = JSON.stringify({
+      ts: "2026-09-01T10:00:00Z", pass: "p", phase: "codegen", task_type: "t",
+      task_id: "1", module: "m", model: "gemini", input_tokens: 10,
+      input_tokens_cached: 0, output_tokens: 5, cost_usd: 0.01,
+      latency_ms: 100, success: true, retry_count: 0,
+    });
+    // Two complete events, then a line the process died halfway through.
+    writeFileSync(path, `${good}\n${good}\n{"ts":"2026-09-01T10:01:00Z","cost_usd":0.02,"input_`);
+
+    const events = readEvents(path);
+    assert.equal(events.length, 2, "the two complete events must survive the partial third");
+    assert.equal(buildManifest(events, { pass: "p", policy_name: "x" }).total_cost_usd, 0.02);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("readEvents skips a garbage line mid-file without losing the events after it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tel-mid-"));
+  const path = join(dir, "telemetry.jsonl");
+  try {
+    const ev = (id) => JSON.stringify({
+      ts: `2026-09-01T10:0${id}:00Z`, pass: "p", phase: "codegen", task_type: "t",
+      task_id: String(id), module: "m", model: "gemini", input_tokens: 1,
+      input_tokens_cached: 0, output_tokens: 1, cost_usd: 0.01,
+      latency_ms: 1, success: true, retry_count: 0,
+    });
+    writeFileSync(path, `${ev(1)}\nnot json at all\n${ev(2)}\n`);
+    assert.deepEqual(readEvents(path).map((e) => e.task_id), ["1", "2"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

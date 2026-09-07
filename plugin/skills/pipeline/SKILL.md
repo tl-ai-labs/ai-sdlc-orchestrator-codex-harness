@@ -485,7 +485,31 @@ Event shape:
 **Your own loop cost is recorded for you.** The driver reads the `codex exec --json` event stream
 after the run and derives the conductor's token usage from it, writing those events with
 `provenance: "modeled"` — modeled from token counts at the pinned rates, because this runtime
-reports no wallet figures. You do not log telemetry by hand, and you must not try to: there is no
-CLI subcommand for it, and any figure you invented would be a guess sitting next to measured ones.
+reports no wallet figures. Never invent token counts or cost for your own work: a guessed figure
+sitting beside measured ones is worse than no figure.
+
+**But a phase that made no model call must still leave a row.** Two cases produce one:
+
+- the intent's phase table says SKIP, or
+- you completed the phase yourself, in-session, without dispatching a packet — a senior review
+  with no changed modules, a security review over an empty diff.
+
+Record each with a zero-cost event, so that a phase missing from `telemetry.jsonl` always means a
+lost event and never an ambiguous one:
+
+```bash
+node '{{PLUGIN_ROOT}}/codex/dispatch.mjs' \
+  --log-phase=<state> --task-type=skipped|in_session \
+  --module=<module> --reason='<why in one line>' \
+  --policy={{POLICY}} --telemetry='{{OUTPUT_DIR}}/telemetry.jsonl' \
+  --out='{{OUTPUT_DIR}}/<state>-skip-receipt.json'
+```
+
+These carry `provenance: "none"` and all-zero tokens. That is not an estimate — it is the fact
+that no model call was made. Where such a phase did consume tokens, they were yours, and they are
+already counted in the driver-loop events; the `--reason` string is what tells a reader so.
+
+A run that writes `review.json` or `security_review.md` without either dispatching a packet or
+logging one of these is under-reporting itself.
 
 **Pricing constants come from the loaded policy YAML's `pricing:` block for the current model — never from your trained knowledge, never hardcoded.** If the policy's pricing block is missing, abort the run.

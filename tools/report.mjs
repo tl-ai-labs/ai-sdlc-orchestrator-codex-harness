@@ -83,7 +83,7 @@ const phaseAgg = new Map();
 let sdlcCost = 0, sdlcCalls = 0;
 let overheadCost = 0, overheadCalls = 0;
 let totalIn = 0, totalOut = 0, totalCached = 0;
-const provCount = { vendor: 0, estimated: 0, modeled: 0, unknown: 0 };
+const provCount = { vendor: 0, estimated: 0, modeled: 0, none: 0, unknown: 0 };
 const packetAgg = new Map();
 
 for (const e of events) {
@@ -103,7 +103,7 @@ for (const e of events) {
 
   const rec = phaseAgg.get(phase) ?? {
     calls: 0, tokIn: 0, tokOut: 0, cost: 0, sdlc: isSdlc,
-    prov: { vendor: 0, estimated: 0, modeled: 0, unknown: 0 },
+    prov: { vendor: 0, estimated: 0, modeled: 0, none: 0, unknown: 0 },
   };
   rec.calls += 1;
   rec.tokIn += tokIn;
@@ -140,7 +140,10 @@ const vendorTotal = sdlcCost + overheadCost;
 function provTag(rec) {
   const kinds = Object.entries(rec.prov).filter(([, n]) => n > 0).map(([k]) => k);
   if (kinds.length > 1) return "~";
-  return { vendor: "V", estimated: "E", modeled: "M", unknown: "?" }[kinds[0]] ?? "?";
+  // `none` is not a missing label — it is a phase that made no model call, so
+  // its zeros are facts. Shown as `–` so a reader can tell "ran, cost nothing
+  // here" from "?" (unlabelled, provenance genuinely unknown).
+  return { vendor: "V", estimated: "E", modeled: "M", none: "–", unknown: "?" }[kinds[0]] ?? "?";
 }
 
 // ─── formatting ───────────────────────────────────────────────────────
@@ -334,14 +337,14 @@ const provLine = Object.entries(provCount)
 if (asMarkdown) {
   p(`---`);
   p();
-  p(`_Provenance key: V = vendor-metered, E = estimated, M = modeled, ~ = mixed within phase, ? = unlabelled._`);
+  p(`_Provenance key: V = vendor-metered, E = estimated, M = modeled, – = no model call (skipped or in-session), ~ = mixed within phase, ? = unlabelled._`);
   if (provLine) p(`_Dispatched events: ${provLine}._`);
   if (driverManifest.pin_rejection) {
     p();
     p(`> **Pin rejected during this run:** ${driverManifest.pin_rejection}`);
   }
 } else {
-  p(`  Provenance key: V vendor-metered · E estimated · M modeled · ~ mixed · ? unlabelled`);
+  p(`  Provenance key: V vendor-metered · E estimated · M modeled · – no model call · ~ mixed · ? unlabelled`);
   if (provLine) p(`  Dispatched events: ${provLine}`);
   if (driverManifest.pin_rejection) {
     p();

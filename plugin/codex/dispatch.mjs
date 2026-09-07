@@ -19,7 +19,10 @@
  *   node dispatch.mjs --packet=<packet.json> --out=<result.json> \
  *                     [--policy=<name>] [--project-root=<path>] \
  *                     [--telemetry=<path>] [--work-dir=<path>]
- *   node dispatch.mjs --preflight --auth-mode=vendor [--policy=<name>] \
+ *   node dispatch.mjs --log-phase=<state> --task-type=skipped|in_session \
+                     --telemetry=<path> --out=<receipt.json> \
+                     [--module=<name>] [--reason=<text>] [--policy=<name>]
+   node dispatch.mjs --preflight --auth-mode=vendor [--policy=<name>] \
  *                     [--project-root=<path>] --out=<result.json>
  */
 
@@ -89,7 +92,12 @@ export function buildPreflightArgs({ authMode, policy, projectRoot }) {
  * One compact line for the conductor to read off stdout. Deliberately
  * excludes the result body — that is what `--out` is for.
  */
-export function summarize(toolName, result) {
+export function summarize(toolName, result, args = {}) {
+  if (toolName === "log_telemetry") {
+    // log_telemetry replies with the bare string "ok", not JSON, so the
+    // summary is built from what was asked rather than from the reply.
+    return `logged phase=${args["log-phase"] ?? "?"} task_type=${args["task-type"] ?? "skipped"} cost_usd=0`;
+  }
   if (toolName === "preflight_dispatch") {
     const models = (result?.models ?? []).map((m) => `${m.id}:${m.ok ? "ok" : "FAILED"}`).join(" ");
     return `preflight ok=${result?.ok === true} ${models}`.trim();
@@ -110,16 +118,84 @@ function writeResult(outPath, payload) {
  * construction, result writing and summarizing without a live bridge or
  * any vendor call.
  */
+/**
+ * A zero-cost event for a phase that ran no model call — one the intent
+ * skipped, or one the conductor completed in-session without dispatching.
+ *
+ * Without this the phase leaves no trace at all, and a reader of
+ * telemetry.jsonl cannot tell a skipped phase from a lost event. That is not
+ * hypothetical: a refactor run whose extraction was already complete wrote a
+ * senior review and a security review, dispatched neither, and produced a
+ * three-event file that looked truncated.
+ *
+ * The zeros are facts, not estimates — `provenance: "none"` says exactly
+ * that. Where such a phase did consume tokens, they are the conductor's own,
+ * and they accrue to the driver loop rather than here; the reason string
+ * carries that so the row explains itself.
+ */
+export function buildLogEventArgs({ phase, taskType, module, reason, policyName, telemetryPath }) {
+  if (!phase) throw new Error("dispatch: --log-phase=<state> is required for --log-phase.");
+  if (!telemetryPath) {
+    throw new Error("dispatch: --telemetry=<path> is required for --log-phase — an unwritten event is not a record.");
+  }
+  const kind = taskType ?? "skipped";
+  if (kind !== "skipped" && kind !== "in_session") {
+    throw new Error(`dispatch: --task-type must be 'skipped' or 'in_session', got '${kind}'.`);
+  }
+  // Snake_case to match the bridge's declared inputSchema — camelCase reaches
+  // the handler as undefined and fails inside appendEvent, not at validation.
+  return {
+    telemetry_path: telemetryPath,
+    event: {
+      pass: null,
+      phase,
+      task_type: kind,
+      task_id: `${phase}-${kind}`,
+      module: module ?? null,
+      model: null,
+      provenance: "none",
+      routed_by: "manual",
+      routing: {
+        policy_name: policyName ?? null,
+        policy_version: 1,
+        rule_index: -1,
+        rule_reason:
+          reason ??
+          (kind === "skipped"
+            ? "phase skipped for this intent — no model call made"
+            : "conductor completed this phase in-session; token cost accrues to the driver loop"),
+      },
+      input_tokens: 0,
+      input_tokens_cached: 0,
+      output_tokens: 0,
+      cost_usd: 0,
+      success: true,
+      retry_count: 0,
+    },
+  };
+}
+
 export async function runDispatch(args, { connect, env = process.env } = {}) {
   const projectRoot = args["project-root"] ? resolve(args["project-root"]) : process.cwd();
   const outPath = args.out;
   if (!outPath) throw new Error("dispatch: --out=<path> is required — results are written to a file, never stdout.");
 
   const isPreflight = Boolean(args.preflight);
+  const isLogPhase = Boolean(args["log-phase"]);
   let toolName;
   let toolArgs;
 
-  if (isPreflight) {
+  if (isLogPhase) {
+    toolName = "log_telemetry";
+    toolArgs = buildLogEventArgs({
+      phase: args["log-phase"],
+      taskType: args["task-type"],
+      module: args.module,
+      reason: args.reason,
+      policyName: args.policy,
+      telemetryPath: args.telemetry,
+    });
+  } else if (isPreflight) {
     if (!args["auth-mode"]) {
       throw new Error(
         "dispatch: --auth-mode=vendor|estimated is required for --preflight. The bridge refuses to " +
@@ -160,7 +236,7 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
     // code would read it as a pass — so the exit code carries the verdict
     // too, not just the payload.
     const verdict = toolName === "preflight_dispatch" ? result?.ok === true : true;
-    return { ok: verdict, toolName, result, summary: summarize(toolName, result) };
+    return { ok: verdict, toolName, result, summary: summarize(toolName, result, args) };
   } finally {
     await bridge.close();
   }
