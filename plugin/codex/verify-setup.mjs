@@ -59,7 +59,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, symlinkSync, lstatSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readMmoSelectFile, writeMmoSelectFile } from "./mmoSelect.mjs";
@@ -345,6 +345,23 @@ export const MIN_CODEX_VERSION = [0, 151, 0];
 // depends on this.
 
 /** Where the skills live, and where codex expects to find them. */
+/**
+ * True when this install came from `codex plugin add` rather than a clone.
+ *
+ * It matters for exactly one check. Codex loads a plugin's skills from its
+ * manifest, so on this route the `.agents/skills` symlinks are pointless —
+ * the skills already work. Reporting them missing sends people to run a
+ * repair that cannot help, and on a read-only filesystem that repair fails
+ * loudly enough to look like a broken install.
+ *
+ * Detected by location: `codex plugin add` unpacks under `<codex home>/plugins/`.
+ */
+export function isPluginInstall(pluginRoot, env = process.env, home = homedir()) {
+  const codexHome = env.CODEX_HOME ?? join(home, ".codex");
+  const prefix = join(codexHome, "plugins") + sep;
+  return resolve(String(pluginRoot ?? "")).startsWith(prefix);
+}
+
 export function skillPaths(pluginRoot, projectRoot) {
   return {
     sourceDir: join(pluginRoot, "skills"),
@@ -384,7 +401,22 @@ export function linkSkills(pluginRoot, projectRoot, log = () => {}) {
   const { missing } = skillLinkState(pluginRoot, projectRoot);
   if (missing.length === 0) return true;
 
-  mkdirSync(linkDir, { recursive: true });
+  // A read-only workspace is a legitimate state, not a broken install: codex's
+  // own read-only sandbox produces exactly this, and linking is a convenience
+  // for the clone route rather than something a run depends on. Fail soft and
+  // say which it is, instead of throwing out of --fix.
+  try {
+    mkdirSync(linkDir, { recursive: true });
+  } catch (err) {
+    log(
+      `  ! could not create ${linkDir}: ${err.message}\n` +
+        "    Skills stay reachable as $mmo-codex:<name> when this harness is installed as a " +
+        "plugin — linking only matters when working inside a clone. If this is a clone, re-run " +
+        "from a session that can write here (codex's read-only sandbox cannot).",
+    );
+    return false;
+  }
+
   for (const name of missing) {
     const linkPath = join(linkDir, name);
     // Anything already sitting here is broken by definition — `missing` means
@@ -453,9 +485,16 @@ export function meetsMinVersion(version, min) {
  */
 export function probeCodexCli(run = spawnSync) {
   const result = run("codex", ["--version"], { encoding: "utf8" });
-  if (result.error || result.status !== 0) {
-    return { present: false, version: null };
+  if (result.error) {
+    // ENOENT is the honest "not installed". Anything else means the spawn
+    // itself was refused — codex's own sandbox denies piped stdio and returns
+    // EPERM, so this check run from inside a codex session would otherwise
+    // report the codex that is running it as missing from PATH. Inability to
+    // look is not evidence of absence; see `unprovable` handling in evaluate.
+    const missing = result.error.code === "ENOENT";
+    return { present: false, version: null, unprovable: !missing, detail: result.error.code ?? null };
   }
+  if (result.status !== 0) return { present: false, version: null };
   return { present: true, version: parseCodexVersion(result.stdout) };
 }
 
@@ -473,7 +512,13 @@ export function probeCodexCli(run = spawnSync) {
  */
 export function probeCodexLogin(run = spawnSync) {
   const result = run("codex", ["login", "status"], { encoding: "utf8" });
-  if (result.error || result.status !== 0) return { loggedIn: false, detail: null };
+  // Same sandbox caveat as probeCodexCli: a refused spawn says nothing about
+  // whether anyone is logged in.
+  if (result.error) {
+    const missing = result.error.code === "ENOENT";
+    return { loggedIn: false, detail: null, unprovable: !missing };
+  }
+  if (result.status !== 0) return { loggedIn: false, detail: null };
   const out = [result.stdout, result.stderr]
     .map((stream) => String(stream ?? "").trim())
     .filter(Boolean)
@@ -547,6 +592,7 @@ export function evaluate({
   agentWorker = null,
   skills = null,
   policy = null,
+  pluginInstall = false,
 }) {
   const problems = [];
 
@@ -559,7 +605,21 @@ export function evaluate({
     });
   }
 
-  if (!codexCli.present) {
+  if (!codexCli.present && codexCli.unprovable) {
+    problems.push({
+      id: "codex-cli-unprovable",
+      severity: "warning",
+      message:
+        `The codex CLI could not be probed (${codexCli.detail ?? "spawn refused"}), so its version ` +
+        "pin and login state are unknown. This is what running inside a codex session looks like: " +
+        "the sandbox denies piped stdio, so spawning `codex --version` fails before PATH is ever " +
+        "consulted. It does not mean codex is missing — it is what is running this check.",
+      fix:
+        "Nothing, if you invoked this from inside codex. To have the version pin and login " +
+        "actually verified, run this script from a plain shell, or start codex with " +
+        "`codex -s danger-full-access`.",
+    });
+  } else if (!codexCli.present) {
     problems.push({
       id: "codex-cli",
       severity: "blocking",
@@ -577,7 +637,9 @@ export function evaluate({
     });
   }
 
-  if (codexCli.present && !codexLogin.loggedIn) {
+  // Skipped when the CLI itself could not be probed: a refused spawn produces
+  // a "not logged in" that means nothing, and one honest warning beats two.
+  if (codexCli.present && !codexLogin.loggedIn && !codexLogin.unprovable) {
     problems.push({
       id: "codex-login",
       severity: "blocking",
@@ -595,7 +657,7 @@ export function evaluate({
     });
   }
 
-  if (skills && skills.missing.length > 0) {
+  if (skills && skills.missing.length > 0 && !pluginInstall) {
     problems.push({
       id: "skills-discoverable",
       severity: "warning",
@@ -831,6 +893,7 @@ function observe(pluginRoot, env = process.env, projectRoot = process.cwd()) {
     agentWorker: observeAgentWorker(pluginRoot, effectiveEnv),
     skills: skillLinkState(pluginRoot, projectRoot),
     policy: observePolicy(pluginRoot, projectRoot),
+    pluginInstall: isPluginInstall(pluginRoot, env),
   };
 }
 

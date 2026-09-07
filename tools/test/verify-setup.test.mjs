@@ -35,6 +35,7 @@ import {
   MIN_CODEX_VERSION,
   probeCodexCli,
   probeCodexLogin,
+  isPluginInstall,
   evaluate,
   enableAgentPath,
   AGENT_WORKER_MODEL_ID,
@@ -167,7 +168,66 @@ test("meetsMinVersion: exact match, above, and below the pin", () => {
 
 test("probeCodexCli reports absent when the binary can't be spawned", () => {
   const fakeRun = () => ({ error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) });
-  assert.deepEqual(probeCodexCli(fakeRun), { present: false, version: null });
+  assert.deepEqual(probeCodexCli(fakeRun), {
+    present: false, version: null, unprovable: false, detail: "ENOENT",
+  });
+});
+
+test("probeCodexCli marks a REFUSED spawn unprovable — codex's sandbox is not a missing binary", () => {
+  // Measured inside `codex sandbox`: spawning with piped stdio returns EPERM,
+  // so this check run from inside a codex session reported the very codex
+  // running it as absent from PATH.
+  const fakeRun = () => ({ error: Object.assign(new Error("EPERM"), { code: "EPERM" }) });
+  const r = probeCodexCli(fakeRun);
+  assert.equal(r.present, false);
+  assert.equal(r.unprovable, true, "a refused spawn says nothing about whether codex is installed");
+  assert.equal(r.detail, "EPERM");
+});
+
+test("evaluate: an unprovable CLI probe warns about the sandbox instead of blocking on 'not found'", () => {
+  const state = evaluate({
+    ...HEALTHY,
+    codexCli: { present: false, version: null, unprovable: true, detail: "EPERM" },
+    codexLogin: { loggedIn: false, unprovable: true },
+  });
+  assert.equal(state.problems.some((p) => p.id === "codex-cli"), false, "must not claim codex is missing");
+  const p = state.problems.find((p) => p.id === "codex-cli-unprovable");
+  assert.ok(p, "the unknown must be reported");
+  assert.equal(p.severity, "warning");
+  assert.equal(
+    state.problems.some((p) => p.id === "codex-login"), false,
+    "an unprovable login is one honest warning, not a second false blocker",
+  );
+});
+
+test("evaluate: a genuinely absent codex still blocks", () => {
+  const state = evaluate({ ...HEALTHY, codexCli: { present: false, version: null, unprovable: false } });
+  const p = state.problems.find((p) => p.id === "codex-cli");
+  assert.equal(p.severity, "blocking", "ENOENT is real evidence and must keep blocking");
+});
+
+test("evaluate: the skills-link check is skipped on a plugin install", () => {
+  // Codex loads a plugin's skills from its manifest, so the .agents/skills
+  // symlinks are a clone-route convenience. Reporting them missing there sends
+  // people at a repair that cannot help — and fails loudly on a read-only fs.
+  const skills = { shipped: ["a", "b"], missing: ["a", "b"] };
+  assert.ok(
+    evaluate({ ...HEALTHY, skills }).problems.some((p) => p.id === "skills-discoverable"),
+    "still reported on the clone route",
+  );
+  assert.equal(
+    evaluate({ ...HEALTHY, skills, pluginInstall: true }).problems.some((p) => p.id === "skills-discoverable"),
+    false,
+    "irrelevant when codex loads skills from the manifest",
+  );
+});
+
+test("isPluginInstall distinguishes a `codex plugin add` location from a clone", () => {
+  const env = { CODEX_HOME: "/home/x/.codex" };
+  assert.equal(isPluginInstall("/home/x/.codex/plugins/cache/tilicho-ai-labs/mmo-codex/0.1.0", env), true);
+  assert.equal(isPluginInstall("/repos/ai-sdlc-orchestrator-codex-harness/plugin", env), false);
+  // A path that merely starts with the same characters is not inside it.
+  assert.equal(isPluginInstall("/home/x/.codex/plugins-elsewhere", env), false);
 });
 
 test("probeCodexCli parses a successful --version call", () => {
