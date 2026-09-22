@@ -29,10 +29,21 @@ test("load_policy reaches the real server and returns the official codex policy"
   }
 });
 
+/**
+ * gpt-plus-flash carries a Gemini tier as well as the GPT one, and preflight
+ * reports on every model in the policy. Left to the machine, that tier is
+ * constructible on a developer box with credentials and not on CI, so these
+ * two tests passed locally and failed in the workflow. Pinning a dummy
+ * Gemini key holds that tier constant so each test asserts only the thing it
+ * names. Nothing here reaches a vendor — preflight constructs adapters and
+ * stops.
+ */
+const DUMMY_GEMINI = { GEMINI_API_KEY: "AIza-test-dummy-not-a-real-key" };
+
 test("preflight_dispatch reaches the real server and classifies a missing OPENAI_API_KEY as blocking", async () => {
   const original = process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_API_KEY;
-  const bridge = await connectBridge();
+  const bridge = await connectBridge({ env: { ...DUMMY_GEMINI } });
   try {
     const result = await bridge.callTool("preflight_dispatch", {
       auth_mode: "vendor",
@@ -47,7 +58,9 @@ test("preflight_dispatch reaches the real server and classifies a missing OPENAI
 });
 
 test("preflight_dispatch passes once a (dummy) OPENAI_API_KEY is present — construction only, no dispatch", async () => {
-  const bridge = await connectBridge({ env: { OPENAI_API_KEY: "sk-test-dummy-not-a-real-key" } });
+  const bridge = await connectBridge({
+    env: { OPENAI_API_KEY: "sk-test-dummy-not-a-real-key", ...DUMMY_GEMINI },
+  });
   try {
     const result = await bridge.callTool("preflight_dispatch", {
       auth_mode: "vendor",
