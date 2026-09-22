@@ -1,10 +1,11 @@
 # The official codex harness policy (D9): GPT for judgment phases, Gemini 3.7
 # Flash for mechanical. Same rule grammar, select-slot shape, and cost cap as
 # the carried opus-plus-flash-v37.yaml this is modeled on — only the judgment
-# tier's adapter and model changed. This is the only policy exposed by the
-# terminal picker and the policy console; every other shipped preset names an
-# Anthropic adapter and is carried as a non-selectable replay fixture (no
-# Anthropic credential exists in this harness's setup).
+# tier's adapter and model changed. This is the default, and one of three
+# policies the terminal picker offers alongside gpt-seat-plus-flash and
+# flash-agsdk-only. The opus-* presets name an Anthropic adapter and are
+# carried as non-selectable replay fixtures (no Anthropic credential exists
+# in this harness's setup).
 #
 # The mechanical tier has two doors to the same model, chosen per run via the
 # `select:` block below: `flash-completion` (one call per packet) or

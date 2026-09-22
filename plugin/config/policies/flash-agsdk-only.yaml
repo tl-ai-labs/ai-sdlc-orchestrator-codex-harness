@@ -1,12 +1,12 @@
 # Flash-only floor — every dispatched task (judgment AND mechanical) routes to
 # Gemini 3.7 Flash via the Antigravity SDK agent adapter.
 #
-# IMPORTANT: the orchestrator subagent's OWN turns (planning, tool-calling,
-# Gate answers) still run on whatever model the Claude Code session is on —
-# subagents in this harness are Claude, unavoidably. Only the dispatched
-# `execute_with_model` calls this policy governs actually route to Flash.
-# The manifest.model_breakdown will still show a Claude row for the
-# orchestrator's session turns; that is expected and correct.
+# IMPORTANT: the conductor's OWN turns (planning, tool-calling, gate answers)
+# run on the pinned GPT model inside `codex exec`, not on Flash. Only the
+# dispatched `execute_with_model` calls this policy governs route to Flash.
+# Those driver turns are reported as modeled driver-loop cost, kept in a
+# separate section and never summed with the dispatched total — see
+# docs/methodology.md.
 version: 1
 name: flash-agsdk-only
 

@@ -211,7 +211,7 @@ The workflow ships as 15 Codex skills. In a codex session, type `$` to mention o
 |---|---|---|
 | [`$mmo-codex:greenfield`](plugin/skills/greenfield/SKILL.md) | Runs the greenfield pipeline. Interviews you for the brief (or reads one you point at), confirms the output path, shows the routing plan, then starts spending. Takes no arguments. | Empty folder + a project brief. Generates a whole new app into `./src/`. |
 | [`$mmo-codex:brownfield`](plugin/skills/brownfield/SKILL.md) | Runs the brownfield pipeline. Hydrates prior state, runs discovery (or resumes), asks for the intent and brief, freezes scope at Gate 0, then executes. Takes no arguments. | Existing repo. Extends the code you already have. |
-| [`$mmo-codex:pass`](plugin/skills/pass/SKILL.md) | Headless twin of the above. Every setting a flag: `--auth`, `--policy`, `--study`, `--run-id`, and more. | CI, scripted replays, batch runs. |
+| [`$mmo-codex:pass`](plugin/skills/pass/SKILL.md) | Headless twin of the above. Every setting a flag: `--brief`, `--policy`, `--gates`, `--intent`, `--run-id`, and more. | CI, scripted replays, batch runs. |
 
 ### Run a specific brownfield job
 

@@ -106,7 +106,7 @@ node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --policy=<name> --project-root '
 
 Otherwise use the same terminal picker as `$mmo-codex:policy change` shape 2. Skip its mid-run guard here
 (no run has started yet in setup); everything else applies — enumerate with `--list-json`, offer
-only the two selectable policies plus `Author a new policy (opens browser)`, then `--check-creds`
+only the three selectable policies plus `Author a new policy (opens browser)`, then `--check-creds`
 the pick before persisting it. See
 [plugin/skills/policy/SKILL.md](../policy/SKILL.md) for the full picker.
 

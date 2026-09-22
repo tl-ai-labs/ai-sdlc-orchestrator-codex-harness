@@ -21,7 +21,7 @@ import { globSync } from "node:fs";
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const FILES = globSync(
-  ["*.md", "docs/**/*.md", "plugin/**/*.md", ".github/**/*.md"],
+  ["*.md", "docs/**/*.md", "plugin/**/*.md", ".github/**/*.md", "examples/**/*.md"],
   { cwd: REPO_ROOT, exclude: (p) => p.includes("node_modules") },
 );
 
@@ -61,4 +61,34 @@ test("no skill or prompt links into plugin/agents/, which this port does not hav
     readFileSync(join(REPO_ROOT, f), "utf-8").includes("plugin/agents/"),
   );
   assert.deepEqual(offenders, [], `these still reference plugin/agents/: ${offenders.join(", ")}`);
+});
+
+test("no markdown teaches the Claude harness's dead command syntax", () => {
+  // `examples/workforce-ops/README.md` shipped `/mmo:pass --auth --study`
+  // for the whole port: slash commands codex never expands, and two flags
+  // run.mjs does not have. skills.test.mjs bans the same syntax but only
+  // under plugin/skills/, and this file's glob did not reach examples/ —
+  // so nothing caught it. Both gaps close here.
+  const dead = [
+    [/\/mmo:/, "'/mmo:' is Claude Code syntax; codex uses $mmo-codex:<name>"],
+    [/--auth[= ]/, "'--auth' is a Claude-harness flag; the dispatcher takes --auth-mode"],
+    [/--study[= ]/, "'--study' is a Claude-harness flag and does not exist here"],
+  ];
+  const offenders = [];
+  for (const rel of FILES) {
+    // The verification file is a historical record of the port itself and
+    // quotes the source harness's surface on purpose.
+    if (rel.startsWith("docs/verification/")) continue;
+    // Inline spans (`...`) are stripped so a doc can name dead syntax as an
+    // anti-example — the same escape hatch style.test.mjs gives. Fenced
+    // blocks are NOT stripped: a runnable block is where the offender was.
+    const text = readFileSync(join(REPO_ROOT, rel), "utf8")
+      .split(/^```/m)
+      .map((seg, i) => (i % 2 === 0 ? seg.replace(/`[^`\n]*`/g, "") : seg))
+      .join("\n");
+    for (const [re, why] of dead) {
+      if (re.test(text)) offenders.push(`${rel}: ${why}`);
+    }
+  }
+  assert.deepEqual(offenders, [], `dead command syntax:\n${offenders.join("\n")}`);
 });
