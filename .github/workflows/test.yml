@@ -38,5 +38,13 @@ jobs:
         run: npm ci
         working-directory: plugin/mcp/model-dispatch
 
+      # The root suite imports plugin/codex/telemetry/event-reader.mjs, which
+      # resolves into the server's compiled dist/. `npm test` builds it, but
+      # only in its second half (tools/test-mcp.mjs) — by which point the root
+      # suite has already failed to resolve the module. Build it up front.
+      - name: Build MCP server
+        run: npm run build
+        working-directory: plugin/mcp/model-dispatch
+
       - name: Run tests
         run: npm test

@@ -23,6 +23,15 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WIZARD = join(REPO_ROOT, "tools", "setup.mjs");
 
 /**
+ * The wizard stops at check [2] when codex is absent, so everything the
+ * later checks print is unreachable. CI has no codex on PATH, which is why
+ * the two assertions below are gated rather than merely flaky: they were
+ * asserting output the wizard is correct not to have produced.
+ */
+const CODEX_PRESENT = spawnSync("codex", ["--version"], { stdio: "ignore" }).status === 0;
+const NEEDS_CODEX = !CODEX_PRESENT && "codex not on PATH — the wizard stops before this point";
+
+/**
  * Runs the wizard with stdin closed — the shape a CI job or a piped shell
  * gives it. A wizard that waits for input here would hang the job forever,
  * so the timeout is the assertion as much as the exit code is.
@@ -69,7 +78,7 @@ test("the wizard runs to completion with stdin closed instead of hanging", () =>
   assert.ok(typeof r.status === "number", "wizard must exit with a status");
 });
 
-test("every question falls through to a documented default when non-interactive", () => {
+test("every question falls through to a documented default when non-interactive", { skip: NEEDS_CODEX }, () => {
   const r = runWizard();
   assert.match(
     r.stdout,
@@ -86,7 +95,7 @@ test("a blocked setup reports its verdict through the exit code, not just on scr
   assert.equal(r.status, 1, "a caller checking only the exit code must see the block");
 });
 
-test("the same install is NOT blocked once the policy is one that needs no key", () => {
+test("the same install is NOT blocked once the policy is one that needs no key", { skip: NEEDS_CODEX }, () => {
   // The other half of the same rule — a wizard that blocks here is telling a
   // ChatGPT-seat user to buy a key they will never use.
   const r = withPolicy("gpt-seat-plus-flash", () => runWizard({ OPENAI_API_KEY: "" }));

@@ -14,16 +14,44 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve, normalize } from "node:path";
+import { dirname, join, resolve, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { globSync } from "node:fs";
+import { readdirSync } from "node:fs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-const FILES = globSync(
-  ["*.md", "docs/**/*.md", "plugin/**/*.md", ".github/**/*.md", "examples/**/*.md"],
-  { cwd: REPO_ROOT, exclude: (p) => p.includes("node_modules") },
-);
+/**
+ * Markdown under the roots that matter, walked by hand.
+ *
+ * `fs.globSync` landed in Node 22 and this repo supports Node 20 — the CI
+ * job pins it, package.json declares it, and env-checks.mjs enforces it. The
+ * import threw `does not provide an export named 'globSync'` on the first CI
+ * run this branch ever got, taking the whole file down before a single
+ * assertion ran.
+ */
+function markdownUnder(rel) {
+  const abs = join(REPO_ROOT, rel);
+  const acc = [];
+  const walk = (dir) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.name === "node_modules" || entry.name === "dist") continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".md")) acc.push(relative(REPO_ROOT, full));
+    }
+  };
+  walk(abs);
+  return acc;
+}
+
+const FILES = [
+  ...readdirSync(REPO_ROOT, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith(".md"))
+    .map((e) => e.name),
+  ...["docs", "plugin", ".github", "examples"].flatMap(markdownUnder),
+];
 
 /** Markdown links to a local path, minus anchors, mailto:, and URLs. */
 function localLinks(text) {
