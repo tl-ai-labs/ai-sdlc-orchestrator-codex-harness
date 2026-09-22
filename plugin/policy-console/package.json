@@ -1,0 +1,16 @@
+{
+  "name": "@mmo/policy-console",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Single-page HTML policy console for AI-SDLC — model-per-phase and thinking-capacity-per-phase. Zero framework, one npm dep (yaml).",
+  "type": "module",
+  "scripts": {
+    "start": "node policy-server.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

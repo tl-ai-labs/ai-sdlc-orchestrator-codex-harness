@@ -1,0 +1,22 @@
+{
+  "name": "ai-sdlc-orchestrator-codex-harness",
+  "version": "0.1.0",
+  "description": "Codex CLI harness that runs a multi-model AI-SDLC pipeline against a project brief and reports what the run spent.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup": "node tools/setup.mjs",
+    "report": "node tools/report.mjs",
+    "test": "node --test tools/test/*.test.mjs && node tools/test-mcp.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness.git"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  }
+}

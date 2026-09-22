@@ -1,0 +1,135 @@
+# Multi-model — Opus 5 for judgment phases, Gemini 3.7 Flash for mechanical.
+# Successor to opus-plus-flash.yaml (which pinned claude-opus-4-7 + gemini-3.5-flash).
+# The mechanical tier has two doors to the same model, chosen per run via the
+# `select:` block below: `flash-completion` (one call per packet) or
+# `flash-agsdk-worker` (an Antigravity SDK agent session). Default is completion.
+version: 1
+name: opus-plus-flash-v37
+
+models:
+  - id: opus
+    adapter: builtin-anthropic
+    model_name: claude-opus-5
+    # TODO(pricing): confirm Opus 5 list rates from platform.claude.com/docs
+    # before shipping. Values carried over from opus-only.yaml as placeholder.
+    pricing: { input: 5.00, input_cached: 0.50, output: 25.00 }
+    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
+    pricing_last_verified: 2026-08-19
+    auth: { env: ANTHROPIC_API_KEY }
+    max_output_tokens_absolute: 32000
+
+  # Gemini 3.7 Flash as a MODEL. One completion call per packet.
+  - id: flash-completion
+    adapter: mcp:model-dispatch
+    model_name: gemini-3.7-flash
+    display_name: gemini-3.7-flash
+    # Flat global/AI-Studio rates. Vertex adds +10% on every token class for
+    # REGIONAL endpoints (Gemini 3+, effective 2026-07-01). Do not hand-edit a
+    # x1.10 in — geminiTransports.ts::applyVertexSurcharge does it at dispatch.
+    # TODO(pricing): confirm Gemini 3.7 Flash rates. Values below carried over
+    # from gemini-3.5-flash as a starting placeholder.
+    pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
+    pricing_last_verified: 2026-08-19
+    # AI Studio door. Unset → adapter falls through to Vertex ADC, same rates.
+    auth: { env: GEMINI_API_KEY }
+    max_output_tokens_absolute: 8192
+
+  # The SAME model reached as an AGENT (Antigravity SDK session with tools and
+  # a working directory). Same rates; several times more tokens per packet
+  # because the SDK re-sends the conversation on every turn plus a ~11.5k-token
+  # identity preamble.
+  - id: flash-agsdk-worker
+    adapter: antigravity-worker
+    model_name: gemini-3.7-flash
+    display_name: gemini-3.7-flash (Antigravity agent)
+    # TODO(pricing): confirm Gemini 3.7 Flash rates.
+    pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
+    pricing_last_verified: 2026-08-19
+    # `region:` deliberately unpinned so this leaf follows GOOGLE_CLOUD_LOCATION
+    # and hits the flat global endpoint by default, same as flash-completion.
+    # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so
+    # no `auth:` block.
+    # 9-minute deadline, then the worker's process group is killed.
+    worker_timeout_sec: 540
+    # No max_output_tokens_absolute: the doubling loop only makes sense when WE
+    # chose the ceiling. An agent session sets its own per-turn limits.
+
+# Logical slots. A rule names the slot; the run picks one option, or gets
+# `default`. The run's choice arrives in SDLC_SELECT, spelled `slot=option`
+# (comma-separated for more than one), written by verify-setup.mjs.
+select:
+  gemini-flash:
+    default: flash-completion
+    options:
+      - flash-completion
+      - flash-agsdk-worker
+    reason: "How the mechanical tier reaches Gemini 3.7: one completion call (cheap, predictable) or an agent session with tools and a workspace (costlier per packet, does its own reading and editing)."
+
+rules:
+  - when: { phase: requirements_analysis }
+    use: opus
+    reason: "Judgment-heavy, low volume"
+  - when: { phase: architecture_design }
+    use: opus
+    reason: "Foundational, decision-bearing"
+  - when: { phase: plan_task_packets }
+    use: opus
+    reason: "Needs full context to slice work cleanly"
+  - when: { phase: senior_code_review }
+    use: opus
+    reason: "Cross-file reasoning + judgment"
+  - when: { phase: security_review }
+    use: opus
+    reason: "Risk-bearing, low volume"
+
+  # Brownfield-mode phases — both premium.
+  - when: { phase: discovery }
+    use: opus
+    reason: "Judgment: understanding an unknown repo is high-stakes"
+  - when: { phase: change_plan }
+    use: opus
+    reason: "Judgment: delta design for feature-extend / refactor / deps"
+
+  - when:
+      phase: codegen
+      task_type:
+        - controller_handler
+        - service_method
+        - dto
+        - module_wiring
+        - migration
+        - seed_data
+        - entity
+        - guard
+        - interceptor
+        - filter
+        - react_component
+        - react_page
+        - api_client
+        - frontend_util
+        - frontend_config
+        - frontend_html
+    use: gemini-flash
+    reason: "Schema-driven boilerplate"
+  - when: { phase: tests }
+    use: gemini-flash
+    reason: "Scaffold-heavy, pattern-based"
+  - when: { phase: docs }
+    use: gemini-flash
+    reason: "Volume work"
+
+  # Escalate to Opus after 2 mechanical-tier retries.
+  - when: { phase: debug, retry_count: { gte: 2 } }
+    use: opus
+    reason: "Escalation: 2 mechanical-tier attempts failed"
+  - when: { phase: debug }
+    use: gemini-flash
+    reason: "Most debugs have clear cause"
+
+  - default: opus
+    reason: "Unrecognized task — fail safe to premium"
+
+# Hard per-run cost cap.
+hard_cost_cap_usd: 50

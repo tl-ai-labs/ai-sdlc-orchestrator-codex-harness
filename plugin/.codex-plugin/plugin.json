@@ -1,0 +1,57 @@
+{
+  "name": "mmo-codex",
+  "version": "0.1.0",
+  "description": "Multi-model AI-SDLC pipeline for the Codex CLI: GPT conductor, GPT judgment worker, Gemini Flash mechanical tier, with per-phase cost attribution.",
+  "author": {
+    "name": "Tilicho Labs"
+  },
+  "homepage": "https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness",
+  "repository": "https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness",
+  "license": "MIT",
+  "keywords": [
+    "sdlc",
+    "multi-model",
+    "orchestration",
+    "codegen",
+    "cost-attribution"
+  ],
+  "skills": "./skills/",
+  "mcpServers": {
+    "model-dispatch": {
+      "command": "node",
+      "args": ["./mcp/model-dispatch/dist/server.js"],
+      "env": {
+        "GEMINI_API_KEY": "${GEMINI_API_KEY}",
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "GOOGLE_APPLICATION_CREDENTIALS": "${GOOGLE_APPLICATION_CREDENTIALS}",
+        "GOOGLE_CLOUD_PROJECT": "${GOOGLE_CLOUD_PROJECT}",
+        "GOOGLE_CLOUD_LOCATION": "${GOOGLE_CLOUD_LOCATION}",
+        "GEMINI_BACKEND": "${GEMINI_BACKEND}",
+        "MMO_SELECT": "${MMO_SELECT}",
+        "GEMINI_WORKER_PYTHON": "${GEMINI_WORKER_PYTHON}",
+        "MMO_LOG_LEVEL": "${MMO_LOG_LEVEL}",
+        "MMO_VERBOSE": "${MMO_VERBOSE}",
+        "MMO_LOG_PREFIX": "${MMO_LOG_PREFIX}"
+      }
+    }
+  },
+  "interface": {
+    "displayName": "AI-SDLC Orchestrator",
+    "shortDescription": "Multi-model SDLC pipeline with cost attribution",
+    "longDescription": "Drives a full SDLC pipeline from a project brief — requirements, design, codegen, tests, senior review, security review — routing each phase to the model its policy names, and reporting what every phase actually cost.",
+    "developerName": "Tilicho Labs",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/tl-ai-labs/ai-sdlc-orchestrator-codex-harness",
+    "defaultPrompt": [
+      "Run the SDLC pipeline against my project brief",
+      "Show this project's model policy",
+      "Add test coverage to this repository"
+    ],
+    "brandColor": "#0F766E"
+  }
+}

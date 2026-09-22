@@ -1,0 +1,41 @@
+name: pr-title
+
+# Squash-merge uses the PR title as the commit subject on develop/main.
+# That's why the title must be a valid conventional-commit subject —
+# this workflow rejects PRs whose title isn't.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            chore
+            refactor
+            test
+            perf
+            build
+            ci
+            style
+            revert
+          requireScope: false
+          subjectPattern: ^(?![A-Z]).+[^.]$
+          subjectPatternError: |
+            The PR title's subject (after the colon) must start with a
+            lowercase letter and must not end with a period.
+
+            Correct:   docs(readme): update install steps
+            Incorrect: docs(readme): Update install steps.

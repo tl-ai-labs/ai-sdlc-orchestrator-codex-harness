@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI-SDLC Policy Console</title>
+  <style>
+    :root {
+      --bg: #fafafa;
+      --surface: #ffffff;
+      --surface-2: #f5f5f5;
+      --border: #e0e0e0;
+      --border-strong: #bdbdbd;
+      --text: #202124;
+      --text-muted: #5f6368;
+      --text-subtle: #80868b;
+      --primary: #1a73e8;
+      --primary-hover: #1765cc;
+      --primary-fg: #ffffff;
+      --success-bg: #e6f4ea;
+      --success-fg: #137333;
+      --danger-bg: #fce8e6;
+      --danger-fg: #c5221f;
+      --warn-bg: #fef7e0;
+      --warn-fg: #b06000;
+      --swatch: #4285f4;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      --radius: 8px;
+      --radius-sm: 4px;
+      --shadow-1: 0 1px 2px rgba(60,64,67,0.08), 0 1px 3px rgba(60,64,67,0.06);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.5; }
+    .mono { font-family: var(--mono); font-size: 0.92em; }
+    .tnum { font-variant-numeric: tabular-nums; }
+    header.topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 20px 32px; position: sticky; top: 0; z-index: 10; box-shadow: var(--shadow-1); }
+    .topbar-inner { max-width: 1200px; margin: 0 auto; }
+    .eyebrow { color: var(--text-subtle); font-size: 12px; letter-spacing: 0.03em; text-transform: uppercase; }
+    h1 { margin: 4px 0 0; font-size: 22px; font-weight: 500; }
+    h2 { margin: 0; font-size: 15px; font-weight: 500; color: var(--text); }
+    p { margin: 4px 0 0; color: var(--text-muted); }
+    .shell { max-width: 1200px; margin: 24px auto; padding: 0 32px; display: flex; flex-direction: column; gap: 20px; }
+    .real-banner { background: var(--warn-bg); color: var(--warn-fg); border-bottom: 1px solid #f4d68b; padding: 10px 32px; text-align: center; font-size: 13px; }
+    .real-banner code { background: rgba(0,0,0,0.05); padding: 1px 5px; border-radius: 3px; }
+    .back-link { background: none; border: none; color: var(--primary); cursor: pointer; padding: 4px 0; font-size: 13px; }
+    .back-link:hover { text-decoration: underline; }
+    .title-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-top: 8px; }
+    .pipeline-order { color: var(--text-subtle); font-size: 12px; }
+    .controls-row { display: flex; align-items: flex-end; gap: 12px; margin-top: 16px; }
+    .controls-row .spacer { flex: 1; }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { color: var(--text-muted); font-size: 12px; }
+    .field input, .field select { padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); font: inherit; color: var(--text); min-width: 180px; }
+    .field input:disabled { background: var(--surface-2); color: var(--text-muted); }
+    .field input:focus, .field select:focus { outline: 2px solid var(--primary); outline-offset: -1px; border-color: var(--primary); }
+    .btn { padding: 8px 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+    .btn:hover { background: var(--surface-2); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-fg); }
+    .btn.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+    .btn.ghost { border-color: transparent; background: transparent; color: var(--primary); }
+    .btn.ghost:hover { background: rgba(26,115,232,0.08); }
+    .module { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow-1); }
+    .module-head { display: flex; gap: 12px; margin-bottom: 16px; }
+    .swatch { display: inline-block; width: 4px; background: var(--swatch); border-radius: 2px; flex-shrink: 0; }
+    .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; cursor: pointer; transition: box-shadow 0.15s, border-color 0.15s; }
+    .card:hover { box-shadow: var(--shadow-1); border-color: var(--border-strong); }
+    .card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 500; }
+    .card .desc { color: var(--text-muted); font-size: 13px; }
+    .card .meta { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .card-add { border-style: dashed; background: transparent; }
+    .card-add h3 { color: var(--primary); }
+    .card-add:hover { border-color: var(--primary); }
+    .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; background: var(--surface-2); color: var(--text-muted); }
+    .badge.preset { background: #e8f0fe; color: var(--primary); }
+    .badge.custom { background: #e6f4ea; color: var(--success-fg); }
+    .model-list { display: flex; flex-direction: column; gap: 8px; }
+    .model-chip { display: grid; grid-template-columns: 160px 220px 1fr auto; align-items: center; gap: 12px; padding: 8px 12px; background: var(--surface-2); border-radius: var(--radius-sm); }
+    .adapter-badge { color: var(--text-muted); font-size: 12px; }
+    .rate { color: var(--text-muted); font-size: 12px; }
+    .rate b { color: var(--text); font-weight: 500; }
+    .rows { display: flex; flex-direction: column; gap: 8px; }
+    .row { display: grid; grid-template-columns: 220px 1fr 220px; align-items: center; gap: 16px; padding: 10px 12px; border-radius: var(--radius-sm); }
+    .row.changed { background: #e8f0fe; }
+    .row .phase { font-weight: 500; }
+    .row .phase small { display: block; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+    .model-thinking-pair { display: flex; gap: 8px; align-items: center; }
+    .model-thinking-pair select { flex: 1; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); font: inherit; }
+    .seg { display: flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+    .seg button { padding: 4px 8px; background: var(--surface); border: none; border-right: 1px solid var(--border); font: inherit; font-size: 12px; cursor: pointer; color: var(--text-muted); }
+    .seg button:last-child { border-right: none; }
+    .seg button:hover { background: var(--surface-2); }
+    .seg button.active { background: var(--primary); color: var(--primary-fg); }
+    .no-thinking { color: var(--text-subtle); font-size: 12px; font-style: italic; padding: 0 12px; }
+    .intent-grid-wrap { overflow-x: auto; }
+    .intent-grid { border-collapse: collapse; width: 100%; font-size: 12px; }
+    .intent-grid th, .intent-grid td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; white-space: nowrap; }
+    .intent-grid thead th { background: var(--surface-2); color: var(--text-muted); font-weight: 500; position: sticky; top: 0; }
+    .intent-grid .grid-row-label { background: var(--surface-2); font-weight: 500; color: var(--text); position: sticky; left: 0; z-index: 1; }
+    .intent-grid tbody tr:nth-child(even) td:not(.grid-row-label) { background: var(--surface); }
+    .intent-grid tbody tr:nth-child(odd) td:not(.grid-row-label) { background: var(--bg); }
+    .intent-grid .grid-skip { color: var(--text-subtle); text-align: center; font-style: italic; cursor: help; }
+    .intent-grid .grid-overridden { background: #e8f0fe !important; }
+    .grid-select { width: 100%; min-width: 150px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); font: inherit; font-size: 12px; }
+    .add-model-btn { margin-top: 12px; }
+    .add-model-form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 16px; background: var(--surface-2); border-radius: var(--radius-sm); margin-top: 12px; }
+    .add-model-actions { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .add-model-actions > div { display: flex; gap: 8px; }
+    .form-errors { color: var(--danger-fg); font-size: 13px; margin: 0; padding-left: 20px; }
+    .valid-banner { padding: 12px 16px; border-radius: var(--radius-sm); font-size: 13px; }
+    .valid-banner.ok { background: var(--success-bg); color: var(--success-fg); }
+    .valid-banner.err { background: var(--danger-bg); color: var(--danger-fg); }
+    .valid-banner ul { margin: 4px 0 0; padding-left: 20px; }
+    .output { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-1); overflow: hidden; }
+    .output-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+    .output-head h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted); }
+    .output-head .path { color: var(--text-muted); font-size: 12px; }
+    .output pre { margin: 0; padding: 16px; overflow-x: auto; font-size: 12px; line-height: 1.6; }
+    .loading { padding: 40px; text-align: center; color: var(--text-muted); }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<div class="real-banner">
+  Saving writes a real file to <code class="mono">plugin/config/policies/</code>. Shipped presets are never overwritten.
+</div>
+
+<!-- ── Gallery view ────────────────────────────────────────────── -->
+<div id="view-gallery">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <span class="eyebrow">ai-sdlc-orchestrator · plugin/config/policies</span>
+      <h1>Policies</h1>
+      <p>Pick a base policy to use as-is, or customize it into a new saved policy for this project.</p>
+    </div>
+  </header>
+  <div class="shell">
+    <div id="gallery" class="gallery">
+      <div class="loading">Loading policies…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Editor view ─────────────────────────────────────────────── -->
+<div id="view-editor" class="hidden">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <button class="back-link" onclick="showGallery()">← Back to policies</button>
+      <div class="title-row">
+        <div>
+          <span class="eyebrow">ai-sdlc-orchestrator · plugin/config/policies</span>
+          <h1 id="editor-title">Customize policy</h1>
+        </div>
+        <div class="pipeline-order">
+          Pipeline order: <span class="mono">requirements → design → plan → codegen → tests → docs → review → security → debug</span>
+        </div>
+      </div>
+      <div class="controls-row">
+        <div class="field">
+          <label>Base policy</label>
+          <input id="base-id" type="text" disabled>
+        </div>
+        <div class="field">
+          <label for="policy-name">Save as</label>
+          <input id="policy-name" type="text" placeholder="e.g. strict-review" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="spacer"></div>
+        <button class="btn ghost" onclick="resetChanges()">Reset changes</button>
+        <button class="btn" onclick="showGallery()">Use as-is</button>
+        <button id="save-btn" class="btn primary" onclick="doSave()" disabled>Save &amp; continue</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell">
+    <section class="module">
+      <div class="module-head">
+        <span class="swatch"></span>
+        <div>
+          <h2>Models in this policy</h2>
+          <p>Every phase below routes to one of these. Add a model to make it selectable — it's written into the saved policy's own <span class="mono">models:</span> block.</p>
+        </div>
+      </div>
+      <div id="model-list" class="model-list"></div>
+      <div id="add-model-container">
+        <button class="btn ghost add-model-btn" onclick="toggleAddModel(true)">+ Add model</button>
+      </div>
+    </section>
+
+    <section class="module">
+      <div class="module-head">
+        <span class="swatch"></span>
+        <div>
+          <h2>Routing &amp; thinking capacity — per phase</h2>
+          <p>The thinking picker sits next to each model and shows that model's own real range — Gemini's named levels via <span class="mono">reasoning.tier</span>, Opus's effort levels via <span class="mono">reasoning.effort</span>. This is what every intent uses unless the table below overrides a cell.</p>
+        </div>
+      </div>
+      <div id="phase-rows" class="rows"></div>
+    </section>
+
+    <section class="module">
+      <div class="module-head">
+        <span class="swatch"></span>
+        <div>
+          <h2>Per-intent overrides</h2>
+          <p>One row per brownfield intent, one column per phase. Each cell shows the model that phase currently uses; picking a different one writes a rule scoped to that exact intent + phase. Grayed cells never run for that intent (see the Intent matrix in <span class="mono">pipeline/SKILL.md</span>).</p>
+        </div>
+      </div>
+      <div id="intent-grid-wrap" class="intent-grid-wrap"></div>
+    </section>
+
+    <div id="validation-banner"></div>
+
+    <div class="output">
+      <div class="output-head">
+        <h2>Generated policy YAML</h2>
+        <span class="path mono" id="output-path">plugin/config/policies/&lt;name&gt;.yaml</span>
+      </div>
+      <pre id="output-yaml" class="mono">Loading preview…</pre>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── constants (mirror policy-server.mjs) ──────────────────────
+
+const TIER_LABEL = { off: "off", minimal: "min", low: "low", medium: "med", high: "high", xhigh: "xh", max: "max" };
+const GEMINI_TIERS = ["off", "minimal", "low", "medium", "high"];
+const ANTHROPIC_EFFORT_TIERS = ["off", "low", "medium", "high", "xhigh", "max"];
+const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+function thinkingSupport(model) {
+  if (!model) return [];
+  if (model.adapter === "mcp:model-dispatch" || model.adapter === "antigravity-worker") return GEMINI_TIERS;
+  if (model.adapter === "builtin-anthropic" || model.adapter === "claude-cli") return ANTHROPIC_EFFORT_TIERS;
+  return [];
+}
+
+function defaultAuthEnv(adapter) {
+  // claude-cli reads OAuth from the local `claude` binary — no env var to name.
+  if (adapter === "claude-cli") return "";
+  return adapter === "builtin-anthropic" ? "ANTHROPIC_API_KEY" : "GEMINI_API_KEY";
+}
+
+// ── state ──────────────────────────────────────────────────────
+
+let allPolicies = [];        // PolicySummary[]
+let allPolicyIds = [];       // string[]
+let phases = [];             // {id,label,note}[]
+let adapters = [];           // string[]
+let adapterLabel = {};       // {adapter: label}
+let intents = [];            // {id,title}[]
+let intentSkippedPhases = {}; // {intentId: phaseId[]}
+let conditionalSkipNote = {}; // {"intentId:phaseId": note}
+let base = null;             // active PolicySummary being edited
+let editorState = null;      // { models, routing, thinking, name, intentOverrides }
+let previewTimer = null;
+
+// ── boot ───────────────────────────────────────────────────────
+
+async function boot() {
+  const r = await fetch("/api/policies");
+  const data = await r.json();
+  allPolicies = data.policies;
+  allPolicyIds = allPolicies.map((p) => p.id);
+  phases = data.phases;
+  adapters = data.adapters;
+  adapterLabel = data.adapterLabel;
+  intents = data.intents;
+  intentSkippedPhases = data.intentSkippedPhases;
+  conditionalSkipNote = data.conditionalSkipNote;
+  renderGallery();
+}
+
+// ── gallery ────────────────────────────────────────────────────
+
+function renderGallery() {
+  const g = document.getElementById("gallery");
+  g.innerHTML = "";
+  for (const p of allPolicies) {
+    const c = document.createElement("div");
+    c.className = "card";
+    c.onclick = () => openEditor(p, false);
+    const meta = p.models.map((m) => m.id).join(", ");
+    c.innerHTML = `
+      <h3>${escapeHtml(p.id)}</h3>
+      <div class="desc">${escapeHtml(p.desc)}</div>
+      <div class="meta">
+        <span class="badge ${p.origin}">${p.origin}</span>
+        <span class="badge">${p.models.length} model${p.models.length === 1 ? "" : "s"}</span>
+        <span class="badge mono">${escapeHtml(meta)}</span>
+      </div>
+    `;
+    g.appendChild(c);
+  }
+  // Default the "add new" base to opus-plus-flash if present, otherwise the
+  // first shipped preset, otherwise the first policy on disk.
+  const defaultBase = allPolicies.find((p) => p.id === "opus-plus-flash")
+    ?? allPolicies.find((p) => p.origin === "preset")
+    ?? allPolicies[0];
+  if (defaultBase) {
+    const addCard = document.createElement("div");
+    addCard.className = "card card-add";
+    addCard.onclick = () => openEditor(defaultBase, true);
+    addCard.innerHTML = `
+      <h3>+ Add a new policy</h3>
+      <div class="desc">Start from <span class="mono">${escapeHtml(defaultBase.id)}</span> and change what you need.</div>
+    `;
+    g.appendChild(addCard);
+  }
+}
+
+function showGallery() {
+  document.getElementById("view-editor").classList.add("hidden");
+  document.getElementById("view-gallery").classList.remove("hidden");
+  boot(); // refresh in case a policy was just saved
+}
+
+// ── editor ─────────────────────────────────────────────────────
+
+function openEditor(policy, isNew) {
+  base = policy;
+  editorState = {
+    models: JSON.parse(JSON.stringify(policy.models)),
+    routing: { ...policy.routing },
+    thinking: { ...policy.thinking },
+    intentOverrides: JSON.parse(JSON.stringify(policy.intentOverrides)),
+    name: "",
+  };
+  document.getElementById("editor-title").textContent = isNew ? "Add a new policy" : `Customize "${policy.id}"`;
+  document.getElementById("base-id").value = policy.id;
+  document.getElementById("policy-name").value = "";
+  document.getElementById("output-path").textContent = "plugin/config/policies/<name>.yaml";
+  document.getElementById("view-gallery").classList.add("hidden");
+  document.getElementById("view-editor").classList.remove("hidden");
+  renderModels();
+  renderPhases();
+  toggleAddModel(false);
+  updateValidation();
+  refreshPreview();
+}
+
+function renderModels() {
+  const list = document.getElementById("model-list");
+  list.innerHTML = "";
+  for (const m of editorState.models) {
+    const el = document.createElement("div");
+    el.className = "model-chip";
+    el.innerHTML = `
+      <span class="mono">${escapeHtml(m.id)}</span>
+      <span class="adapter-badge">${escapeHtml(adapterLabel[m.adapter] ?? m.adapter)}</span>
+      <span class="mono">${escapeHtml(m.model_name)}</span>
+      <span class="rate tnum">$${m.pricing.input.toFixed(2)} in / $${m.pricing.output.toFixed(2)} out /1M</span>
+    `;
+    list.appendChild(el);
+  }
+}
+
+function renderPhases() {
+  renderDefaultPhases();
+  renderIntentGrid();
+}
+
+function renderDefaultPhases() {
+  const container = document.getElementById("phase-rows");
+  container.innerHTML = "";
+  for (const phase of phases) {
+    const row = document.createElement("div");
+    const routingChanged = editorState.routing[phase.id] !== base.routing[phase.id];
+    const thinkingChanged = editorState.thinking[phase.id] !== base.thinking[phase.id];
+    row.className = "row" + (routingChanged || thinkingChanged ? " changed" : "");
+    const model = editorState.models.find((m) => m.id === editorState.routing[phase.id]);
+    const supported = thinkingSupport(model);
+
+    const options = editorState.models.map((m) =>
+      `<option value="${escapeHtml(m.id)}" ${m.id === editorState.routing[phase.id] ? "selected" : ""}>${escapeHtml(m.id)}</option>`
+    ).join("");
+
+    const seg = supported.length > 0
+      ? `<div class="seg">${supported.map((t) =>
+          `<button type="button" class="${editorState.thinking[phase.id] === t ? "active" : ""}" title="Thinking: ${t}" onclick="setThinking('${phase.id}', '${t}')">${TIER_LABEL[t]}</button>`
+        ).join("")}</div>`
+      : `<span class="no-thinking">Not available</span>`;
+
+    const codegenNote = phase.id === "codegen" ? " · shared by 16 task types" : "";
+    row.innerHTML = `
+      <div class="phase">${escapeHtml(phase.label)}<small>${escapeHtml(phase.note)}${codegenNote}</small></div>
+      <div class="model-thinking-pair">
+        <select onchange="setPhaseModel('${phase.id}', this.value)">${options}</select>${seg}
+      </div>
+      <div class="rate tnum">${model ? `<b>$${model.pricing.input.toFixed(2)}</b> in / <b>$${model.pricing.output.toFixed(2)}</b> out /1M` : ""}</div>
+    `;
+    container.appendChild(row);
+  }
+}
+
+const GRID_DEFAULT_SENTINEL = "__default__";
+
+/**
+ * One table: a row per intent (first column), a column per phase. Every
+ * intent's row is fully visible at once — no click-through needed to
+ * compare, say, Tests across all seven. Each cell is one <select>; its first
+ * option is a sentinel (GRID_DEFAULT_SENTINEL) labeled with the phase's
+ * current default model — picking it clears the override, picking any other
+ * model sets one. Skipped cells (INTENT_SKIPPED_PHASES) render as a plain,
+ * non-interactive dash — an override there could never fire.
+ */
+function renderIntentGrid() {
+  const wrap = document.getElementById("intent-grid-wrap");
+
+  const headerCells = phases.map((p) => `<th>${escapeHtml(p.label)}</th>`).join("");
+
+  const bodyRows = intents.map((intent) => {
+    const skipped = new Set(intentSkippedPhases[intent.id] ?? []);
+    const overrides = editorState.intentOverrides[intent.id] ?? {};
+
+    const cells = phases.map((phase) => {
+      if (skipped.has(phase.id)) {
+        const note = conditionalSkipNote[`${intent.id}:${phase.id}`] ?? `Skipped for ${intent.id}`;
+        return `<td class="grid-skip" title="${escapeHtml(note)}">—</td>`;
+      }
+      const overrideModel = overrides[phase.id];
+      const on = overrideModel !== null && overrideModel !== undefined;
+      // The default-inherit option below already shows this phase's default
+      // model by name — excluding it here avoids two identically-labeled
+      // entries in the same dropdown. Kept in if it's also the active
+      // override (e.g. the default changed after the override was set),
+      // so that selection is never silently orphaned.
+      const options = editorState.models
+        .filter((m) => m.id !== editorState.routing[phase.id] || m.id === overrideModel)
+        .map((m) =>
+          `<option value="${escapeHtml(m.id)}" ${on && m.id === overrideModel ? "selected" : ""}>${escapeHtml(m.id)}</option>`
+        ).join("");
+      return `
+        <td class="${on ? "grid-overridden" : ""}">
+          <select class="grid-select" onchange="setIntentGridCell('${intent.id}', '${phase.id}', this.value)">
+            <option value="${GRID_DEFAULT_SENTINEL}" ${on ? "" : "selected"}>${escapeHtml(editorState.routing[phase.id])}</option>
+            ${options}
+          </select>
+        </td>
+      `;
+    }).join("");
+
+    return `<tr><th class="grid-row-label">${escapeHtml(intent.title)}</th>${cells}</tr>`;
+  }).join("");
+
+  wrap.innerHTML = `
+    <table class="intent-grid">
+      <thead><tr><th class="grid-row-label">Intent</th>${headerCells}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  `;
+}
+
+function setIntentGridCell(intentId, phaseId, value) {
+  editorState.intentOverrides[intentId][phaseId] = value === GRID_DEFAULT_SENTINEL ? null : value;
+  renderIntentGrid();
+  scheduleRefresh();
+}
+
+
+function setPhaseModel(phaseId, modelId) {
+  editorState.routing[phaseId] = modelId;
+  const model = editorState.models.find((m) => m.id === modelId);
+  const supported = thinkingSupport(model);
+  if (!supported.includes(editorState.thinking[phaseId])) {
+    editorState.thinking[phaseId] = "off";
+  }
+  renderPhases();
+  scheduleRefresh();
+}
+
+function setThinking(phaseId, tier) {
+  editorState.thinking[phaseId] = tier;
+  renderPhases();
+  scheduleRefresh();
+}
+
+function resetChanges() {
+  if (!base) return;
+  editorState.models = JSON.parse(JSON.stringify(base.models));
+  editorState.routing = { ...base.routing };
+  editorState.thinking = { ...base.thinking };
+  editorState.intentOverrides = JSON.parse(JSON.stringify(base.intentOverrides));
+  editorState.name = "";
+  document.getElementById("policy-name").value = "";
+  renderModels();
+  renderPhases();
+  updateValidation();
+  refreshPreview();
+}
+
+// ── add model form ─────────────────────────────────────────────
+
+function toggleAddModel(show) {
+  const c = document.getElementById("add-model-container");
+  if (!show) {
+    c.innerHTML = `<button class="btn ghost add-model-btn" onclick="toggleAddModel(true)">+ Add model</button>`;
+    return;
+  }
+  const adapterOptions = adapters.map((a) => `<option value="${a}">${escapeHtml(adapterLabel[a] ?? a)}</option>`).join("");
+  c.innerHTML = `
+    <div class="add-model-form">
+      <div class="field"><label>Model id</label><input id="new-id" type="text" placeholder="e.g. gemini-3-pro"></div>
+      <div class="field"><label>Adapter</label><select id="new-adapter" onchange="onAdapterChange()">${adapterOptions}</select></div>
+      <div class="field"><label>Model name (vendor string)</label><input id="new-model-name" type="text" placeholder="e.g. gemini-3.0-pro"></div>
+      <div class="field"><label>Credential env var</label><input id="new-auth-env" type="text" value="${defaultAuthEnv(adapters[0])}"></div>
+      <div class="field"><label>Input $/1M</label><input id="new-input" type="text" inputmode="decimal" placeholder="0.00"></div>
+      <div class="field"><label>Cached input $/1M</label><input id="new-input-cached" type="text" inputmode="decimal" placeholder="0.00"></div>
+      <div class="field"><label>Output $/1M</label><input id="new-output" type="text" inputmode="decimal" placeholder="0.00"></div>
+      <div class="add-model-actions">
+        <ul id="new-model-errors" class="form-errors hidden"></ul>
+        <div>
+          <button class="btn ghost" onclick="toggleAddModel(false)">Cancel</button>
+          <button class="btn primary" onclick="addModel()">Add model</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function onAdapterChange() {
+  const a = document.getElementById("new-adapter").value;
+  document.getElementById("new-auth-env").value = defaultAuthEnv(a);
+}
+
+function addModel() {
+  const id = document.getElementById("new-id").value.trim();
+  const adapter = document.getElementById("new-adapter").value;
+  const model_name = document.getElementById("new-model-name").value.trim();
+  const authEnv = document.getElementById("new-auth-env").value.trim() || defaultAuthEnv(adapter);
+  const input = Number(document.getElementById("new-input").value);
+  const input_cached = Number(document.getElementById("new-input-cached").value);
+  const output = Number(document.getElementById("new-output").value);
+
+  const errs = [];
+  if (!id) errs.push("Model id is required.");
+  else if (!NAME_PATTERN.test(id)) errs.push("Model id must be lowercase, filesystem-safe.");
+  else if (editorState.models.some((m) => m.id === id)) errs.push(`Model id "${id}" already in use.`);
+  if (!model_name) errs.push("Model name is required.");
+  for (const [label, v] of [["Input", input], ["Cached", input_cached], ["Output", output]]) {
+    if (!Number.isFinite(v) || v < 0) errs.push(`${label} price must be a number ≥ 0.`);
+  }
+
+  const errEl = document.getElementById("new-model-errors");
+  if (errs.length) {
+    errEl.classList.remove("hidden");
+    errEl.innerHTML = errs.map((e) => `<li>${escapeHtml(e)}</li>`).join("");
+    return;
+  }
+
+  const model = { id, adapter, model_name, pricing: { input, input_cached, output } };
+  // claude-cli has no env var — omit auth entirely so the YAML doesn't carry
+  // a misleading empty key.
+  if (authEnv) model.auth = { env: authEnv };
+  editorState.models.push(model);
+  renderModels();
+  renderPhases();
+  toggleAddModel(false);
+  scheduleRefresh();
+}
+
+// ── validation + save ──────────────────────────────────────────
+
+document.addEventListener("input", (e) => {
+  if (e.target.id === "policy-name") {
+    editorState.name = e.target.value.trim();
+    updateValidation();
+    document.getElementById("output-path").textContent =
+      `plugin/config/policies/${editorState.name || "<name>"}.yaml`;
+  }
+});
+
+function updateValidation() {
+  const banner = document.getElementById("validation-banner");
+  const name = editorState.name;
+  const errs = [];
+
+  if (name) {
+    if (allPolicyIds.includes(name)) errs.push(`Name "${name}" already exists — pick a name not in: ${allPolicyIds.join(", ")}.`);
+    if (!NAME_PATTERN.test(name)) errs.push("Name must be lowercase, filesystem-safe (letters, digits, hyphens).");
+  }
+
+  const hasChanges = JSON.stringify(editorState.routing) !== JSON.stringify(base.routing)
+    || JSON.stringify(editorState.thinking) !== JSON.stringify(base.thinking)
+    || JSON.stringify(editorState.intentOverrides) !== JSON.stringify(base.intentOverrides)
+    || editorState.models.length !== base.models.length;
+
+  const saveBtn = document.getElementById("save-btn");
+  saveBtn.disabled = errs.length > 0 || !name;
+
+  if (errs.length) {
+    banner.innerHTML = `<div class="valid-banner err"><strong>Cannot save yet</strong><ul>${errs.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul></div>`;
+  } else if (!name) {
+    banner.innerHTML = `<div class="valid-banner ok">Give the customized policy a name to enable <strong>Save &amp; continue</strong>. ${hasChanges ? "Changes detected against the base policy." : "No changes yet — “Use as-is” goes back to the gallery."}</div>`;
+  } else {
+    banner.innerHTML = `<div class="valid-banner ok">Valid. Will write <strong>plugin/config/policies/${escapeHtml(name)}.yaml</strong>.</div>`;
+  }
+}
+
+function scheduleRefresh() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(refreshPreview, 150);
+  updateValidation();
+}
+
+async function refreshPreview() {
+  const r = await fetch("/api/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      baseId: base.id,
+      name: editorState.name || "preview",
+      models: editorState.models,
+      routing: editorState.routing,
+      thinking: editorState.thinking,
+      intentOverrides: editorState.intentOverrides,
+    }),
+  });
+  const data = await r.json();
+  document.getElementById("output-yaml").textContent = data.ok ? data.yaml : "(preview blocked: " + (data.errors ?? []).join("; ") + ")";
+}
+
+async function doSave() {
+  const r = await fetch("/api/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      baseId: base.id,
+      name: editorState.name,
+      models: editorState.models,
+      routing: editorState.routing,
+      thinking: editorState.thinking,
+      intentOverrides: editorState.intentOverrides,
+    }),
+  });
+  const data = await r.json();
+  const banner = document.getElementById("validation-banner");
+  if (data.ok) {
+    banner.innerHTML = `<div class="valid-banner ok"><strong>Saved.</strong> ${escapeHtml(data.path)} written. <button class="btn ghost" onclick="showGallery()">View in Policies →</button></div>`;
+  } else {
+    banner.innerHTML = `<div class="valid-banner err"><strong>Save failed</strong><ul>${(data.errors ?? []).map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul></div>`;
+  }
+}
+
+// ── util ───────────────────────────────────────────────────────
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[c]);
+}
+
+boot();
+</script>
+
+</body>
+</html>

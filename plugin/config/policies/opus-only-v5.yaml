@@ -1,0 +1,43 @@
+# Premium-ceiling baseline — every phase runs on Opus 5, no delegation.
+# Successor to opus-only.yaml (which pinned claude-opus-4-7). Kept as a
+# separate file so existing studies referencing opus-only still work.
+version: 1
+name: opus-only-v5
+
+models:
+  - id: opus
+    adapter: builtin-anthropic
+    model_name: claude-opus-5
+    # TODO(pricing): confirm Opus 5 list rates from platform.claude.com/docs
+    # before shipping. Values below carried over from opus-only.yaml (Opus 4.7)
+    # as a conservative placeholder.
+    pricing:
+      input: 5.00          # USD per 1M tokens
+      input_cached: 0.50
+      output: 25.00
+    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
+    pricing_last_verified: 2026-08-19
+    auth:
+      env: ANTHROPIC_API_KEY
+    # Doubling loop clamps here; requests beyond this return 400.
+    max_output_tokens_absolute: 32000
+
+rules:
+  # Brownfield-mode phases (added in the v1 brownfield extension). Explicit
+  # rules rather than relying on the default, so telemetry rollups show the
+  # routing decision was intentional per-phase.
+  - when: { phase: discovery }
+    use: opus
+    reason: "Judgment: understanding an unknown repo is high-stakes; a wrong stack detection cascades"
+  - when: { phase: change_plan }
+    use: opus
+    reason: "Judgment: delta design for brownfield feature-extend / refactor / deps"
+
+  - default: opus
+    reason: "Single-model, premium tier"
+
+# Hard per-run cost cap. When the accumulated cost_usd across telemetry
+# events for the current run exceeds this, the orchestrator aborts with
+# a clear message. Prevents runaway spend on an unexpectedly large repo.
+# Users on custom policies may raise or omit this.
+hard_cost_cap_usd: 50

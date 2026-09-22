@@ -1,0 +1,5 @@
+# This skill starts a full multi-phase SDLC run that writes files and spends
+# money. Implicit matching is off so that merely mentioning the job type in
+# conversation cannot start one — the user has to ask for it by name.
+policy:
+  allow_implicit_invocation: false

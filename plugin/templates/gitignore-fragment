@@ -1,0 +1,25 @@
+# AI-SDLC Orchestrator plugin — brownfield-mode state
+#
+# The plugin keeps per-project state under `.sdlc/`. Most of it is
+# team-shared and belongs in git; a few files are personal or
+# ephemeral and must NOT be committed.
+#
+# Add this fragment (or its lines) to your project's .gitignore.
+# The plugin only offers this at first-run Gate 0; it never
+# appends to your .gitignore without asking.
+
+# Personal / per-developer state — never commit
+.sdlc/local/
+
+# Optional: uncomment to also ignore support bundles (they redact secrets
+# but include debug logs and provenance excerpts, which some teams prefer
+# to keep out of the repo history)
+# .sdlc/support-bundle-*.tar.gz
+
+# What stays committed (do NOT ignore):
+#   .sdlc/project.json         — team fingerprint (stack, test cmd, off-limits)
+#   .sdlc/policy.yaml          — team routing policy override (if used)
+#   .sdlc/ledger.md            — human-readable run history
+#   .sdlc/ledger.json          — machine mirror of the ledger
+#   .sdlc/runs/**              — per-run frozen records (packets, provenance, reports)
+#   .sdlc/baseline/**          — living project baseline (discovery + stack profile)

@@ -1,0 +1,13 @@
+{
+  "name": "brownfield-docs-gen-example",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test src/"
+  },
+  "dependencies": {
+    "express": "^4.19.0"
+  }
+}

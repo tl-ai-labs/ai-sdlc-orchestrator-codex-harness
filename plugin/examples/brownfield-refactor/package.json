@@ -1,0 +1,7 @@
+{
+  "name": "brownfield-refactor-example",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test src/*.spec.js" }
+}

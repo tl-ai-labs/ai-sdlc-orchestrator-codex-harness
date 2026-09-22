@@ -1,0 +1,20 @@
+{
+  "name": "tilicho-ai-labs",
+  "interface": {
+    "displayName": "Tilicho AI Labs"
+  },
+  "plugins": [
+    {
+      "name": "mmo-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
