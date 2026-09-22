@@ -79,3 +79,14 @@ The user-facing docs (`README.md`, `docs/*.md`, this file) and the source commen
 **Do-not-touch surfaces.** `SETUP.md` and everything under `plugin/{commands,agents,skills}/` are Codex-instruction files where `the user` is the correct third-person reference — those files describe what the user's experience should be to another agent that will drive it. The style test excludes these paths on purpose. Historical records (`docs/walkthroughs/`, `examples/*/passes/`) are also excluded.
 
 Codex CLI sessions see the same rules in [AGENTS.md](AGENTS.md), which lives at the repo root so it loads automatically at session start.
+
+## Maintainer skills
+
+Two Codex skills live under `.agents/skills/` for whoever works on this repo. They are not packaged with the plugin and never reach an install.
+
+| Skill | Invoke | What it does |
+|---|---|---|
+| `house-style` | `$house-style` | Sweeps the writing conventions above across the in-scope files, applies the fixes, re-runs `npm test`. |
+| `contribution-flow` | `$contribution-flow` | The branching model, commit and PR-title rules, squash-merge policy, and the release-cut recipe, in the form an agent follows before touching a branch. |
+
+That directory is also where `verify-setup.mjs --fix` writes symlinks to the shipped skills in `plugin/skills/`. Those links are generated and gitignored; the two directories above are tracked source. `uninstall-cleanup.mjs` removes only the symlinks, so cleaning up after the plugin leaves them in place.

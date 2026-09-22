@@ -41,7 +41,7 @@
  *   1 — cleanup failed OR user aborted
  */
 
-import { existsSync, statSync, rmSync, lstatSync } from "node:fs";
+import { existsSync, statSync, rmSync, lstatSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -122,6 +122,31 @@ export function survey(repoRoot, { exists = existsSync, mcp = mcpRegistered } = 
   };
 }
 
+/**
+ * Split `.agents/skills/` into what this harness created and what it did not.
+ *
+ * Only symlinks are ours — `verify-setup.mjs --fix` makes them and nothing
+ * else. A real directory there belongs to whoever wrote it, including this
+ * repo's own tracked maintainer skills, so removing the whole directory
+ * would delete source the user never generated. `linkSkills` already refuses
+ * to overwrite a non-symlink for the same reason; this is the other half.
+ */
+export function partitionSkillEntries(
+  agentsDir,
+  { readdir = readdirSync, lstat = lstatSync } = {},
+) {
+  let entries;
+  try { entries = readdir(agentsDir); } catch { return { links: [], kept: [] }; }
+  const links = [];
+  const kept = [];
+  for (const name of entries.sort()) {
+    let isLink = false;
+    try { isLink = lstat(join(agentsDir, name)).isSymbolicLink(); } catch { /* unreadable → not ours */ }
+    (isLink ? links : kept).push(name);
+  }
+  return { links, kept };
+}
+
 export function nothingToDo(found) {
   return !found.sdlc && !found.agents && !found.mcp;
 }
@@ -160,7 +185,13 @@ async function main() {
     console.log(`  • ${found.sdlcDir} (whole directory — per-run records, telemetry, baseline)`);
   }
   if (found.agents) {
-    console.log(`  • ${found.agentsDir} (symlinks to the shipped skills, created by verify-setup --fix)`);
+    const { links, kept } = partitionSkillEntries(found.agentsDir);
+    console.log(
+      `  • ${links.length} skill link(s) in ${found.agentsDir}, created by verify-setup --fix`,
+    );
+    if (kept.length) {
+      console.log(`    keeping ${kept.length} entr${kept.length === 1 ? "y" : "ies"} this harness did not create: ${kept.join(", ")}`);
+    }
   }
   if (found.mcp && !args.keepMcp) {
     console.log(`  • the '${MCP_SERVER_NAME}' MCP server registered in ~/.codex/config.toml`);
@@ -191,17 +222,21 @@ async function main() {
   }
 
   if (found.agents) {
-    // Defaults to yes: these hold no user data — every entry is a symlink to
-    // a file the plugin ships — and left behind they dangle.
-    if (args.yes || (await ask("Remove .agents/skills/ (skill links, no user data)?", true))) {
+    const { links, kept } = partitionSkillEntries(found.agentsDir);
+    if (links.length === 0) {
+      console.log(`Nothing of ours in ${found.agentsDir} — leaving it alone.`);
+    } else if (args.yes || (await ask(`Remove ${links.length} skill link(s) from .agents/skills/?`, true))) {
       try {
-        rmSync(found.agentsDir, { recursive: true, force: true });
-        console.log(`✓ Removed ${found.agentsDir}`);
+        for (const name of links) rmSync(join(found.agentsDir, name), { recursive: true, force: true });
+        // The directory itself goes only when nothing of anyone else's is
+        // left in it.
+        if (kept.length === 0) rmSync(found.agentsDir, { recursive: true, force: true });
+        console.log(`✓ Removed ${links.length} skill link(s) from ${found.agentsDir}`);
       } catch (e) {
-        console.error(`✗ Could not remove ${found.agentsDir}: ${e?.message ?? e}`);
+        console.error(`✗ Could not clean ${found.agentsDir}: ${e?.message ?? e}`);
       }
     } else {
-      console.log("Keeping .agents/skills/. Its links will dangle once the plugin is gone.");
+      console.log("Keeping the skill links. They will dangle once the plugin is gone.");
     }
   }
 

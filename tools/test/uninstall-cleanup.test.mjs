@@ -16,6 +16,7 @@ import {
   parseArgs,
   findRepoRoot,
   survey,
+  partitionSkillEntries,
   nothingToDo,
   mcpRegistered,
   MCP_SERVER_NAME,
@@ -149,4 +150,47 @@ test("mcpRegistered reports false when codex is absent or its output is unusable
     mcpRegistered(() => ({ status: 0, stdout: "not json" })), false,
     "malformed output is not evidence of a registration",
   );
+});
+
+// ── what the cleanup may and may not delete ──────────────────────────────
+
+test("partitionSkillEntries claims the symlinks and disowns everything else", () => {
+  // `.agents/skills/` is codex's scan path, not a directory this harness
+  // owns. The repo's own maintainer skills are tracked git content living
+  // right next to the generated links; deleting the directory wholesale
+  // would remove them.
+  const dir = makeRepo();
+  try {
+    const skills = join(dir, ".agents", "skills");
+    mkdirSync(skills, { recursive: true });
+    mkdirSync(join(dir, "plugin", "skills", "pipeline"), { recursive: true });
+    symlinkSync(join(dir, "plugin", "skills", "pipeline"), join(skills, "pipeline"), "dir");
+    mkdirSync(join(skills, "house-style"));
+    writeFileSync(join(skills, "house-style", "SKILL.md"), "---\nname: house-style\n---\n");
+
+    const { links, kept } = partitionSkillEntries(skills);
+    assert.deepEqual(links, ["pipeline"]);
+    assert.deepEqual(kept, ["house-style"]);
+  } finally { cleanup(dir); }
+});
+
+test("a dangling link is still ours to remove", () => {
+  // The state an uninstall leaves behind. Following the link would report it
+  // as absent and leave codex scanning a broken skill forever.
+  const dir = makeRepo();
+  try {
+    const skills = join(dir, ".agents", "skills");
+    mkdirSync(skills, { recursive: true });
+    symlinkSync(join(dir, "gone", "pipeline"), join(skills, "pipeline"), "dir");
+    assert.deepEqual(partitionSkillEntries(skills).links, ["pipeline"]);
+  } finally { cleanup(dir); }
+});
+
+test("partitionSkillEntries returns empty lists for a directory that is not there", () => {
+  const dir = makeRepo();
+  try {
+    const { links, kept } = partitionSkillEntries(join(dir, ".agents", "skills"));
+    assert.deepEqual(links, []);
+    assert.deepEqual(kept, []);
+  } finally { cleanup(dir); }
 });

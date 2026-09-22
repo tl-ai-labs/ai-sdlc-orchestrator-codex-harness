@@ -23,7 +23,7 @@ Rules for Codex CLI sessions editing this repo. The full contributor guide is [C
 
 `npm test` runs `tools/test/style.test.mjs` which greps for the slop terms and third-person patterns above. Regressions fail the test.
 
-**Do-not-touch surfaces.** `SETUP.md` and everything under `plugin/{commands,agents,skills}/` are Codex-instruction files where `the user` is the correct third-person reference — the style test excludes them. Historical records (`docs/walkthroughs/`, `examples/*/passes/`) are also excluded.
+**Do-not-touch surfaces.** `SETUP.md` and everything under `plugin/{commands,agents,skills}/` and `.agents/skills/` are Codex-instruction files where `the user` is the correct third-person reference — the style test excludes them. Historical records (`docs/walkthroughs/`, `examples/*/passes/`) are also excluded.
 
 ## Codex runtime notes
 
@@ -39,4 +39,5 @@ Rules for Codex CLI sessions editing this repo. The full contributor guide is [C
 
 - **No `Co-Authored-By:` trailers for AI assistants** in commit messages. See CONTRIBUTING.md.
 - **One topic per PR**, focused diff.
+- **Two maintainer skills ship in `.agents/skills/`.** `$house-style` runs the writing-convention sweep; `$contribution-flow` carries the branching, commit and PR rules. Invoke them rather than re-deriving the rules.
 - **Run `npm test` before you submit.** It is offline and free.
