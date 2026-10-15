@@ -6,22 +6,26 @@ The driver reads the brief file at the path it is given. The requirements and
 architecture phases expect the section headings listed below; the wording
 under each is up to the author.
 
-Copy this file, fill in the sections, save it anywhere in the repo (or
-outside it), and point the driver at the new path:
+Copy this file, fill in the sections, and save it as `brief.md` in the
+project folder. In a codex session, `$mmo-codex:greenfield` finds it there, or
+asks for its path. For a headless run, point `run.mjs` at it from the project folder, with the
+harness cloned at `~/mmo-codex` as [headless-runs.md](headless-runs.md) step 1 does:
 
-```
-node plugin/codex/run.mjs \
-  --brief=path/to/your-brief.md \
+```bash
+node ~/mmo-codex/plugin/codex/run.mjs \
+  --brief=brief.md \
   --project-root=. \
-  --output-dir=.sdlc \
+  --mode=greenfield \
   --policy=gpt-plus-flash \
+  --gates=auto-approve \
   --run-id=pass1
 ```
 
-Output lands under `--output-dir` (default `.sdlc/`): telemetry, task packets,
-and the run manifest. Give each run its own `--run-id` so they stay separate.
-Add `--dry-run` to render the conductor prompt and exit without spending
-anything, and `--gates=auto-approve` for an unattended run.
+Each run's record lands in its own folder, `.sdlc/runs/<run-id>/`: telemetry,
+task packets, the gate decisions, the run manifest and the cost report. A
+`--run-id` that already has a record is refused rather than overwritten.
+Add `--dry-run` to print the resolved invocation and exit without spending
+anything.
 
 Related: [running.md](running.md#bring-your-own-brief) for the full workflow,
 [methodology.md](methodology.md) for what the pipeline records.

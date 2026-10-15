@@ -11,6 +11,10 @@
 # Personal / per-developer state — never commit
 .sdlc/local/
 
+# Copies of files that were uncommitted or untracked when a run touched
+# them, kept for $mmo-codex:revert — never commit
+.sdlc/runs/*/backups/
+
 # Optional: uncomment to also ignore support bundles (they redact secrets
 # but include debug logs and provenance excerpts, which some teams prefer
 # to keep out of the repo history)
@@ -21,5 +25,6 @@
 #   .sdlc/policy.yaml          — team routing policy override (if used)
 #   .sdlc/ledger.md            — human-readable run history
 #   .sdlc/ledger.json          — machine mirror of the ledger
-#   .sdlc/runs/**              — per-run frozen records (packets, provenance, reports)
+#   .sdlc/runs/**              — per-run frozen records (packets, provenance, reports),
+#                                except each run's backups/
 #   .sdlc/baseline/**          — living project baseline (discovery + stack profile)

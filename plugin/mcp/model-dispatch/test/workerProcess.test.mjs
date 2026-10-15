@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  AGY_USAGE_SEMANTICS,
   DEFAULT_WORKER_TIMEOUT_SEC,
   WORKER_KILL_GRACE_SEC,
   WORKER_PYTHON_ENV,
@@ -25,6 +26,7 @@ import {
   mapSidecarTokens,
   resolveWorkerPython,
   sidecarToolCallCount,
+  sidecarUsageSemantics,
   workerTaskMarkdown,
   workerThinkingLevel,
   workerVenvPython,
@@ -195,6 +197,7 @@ test("sidecar token counts are read under Python's field names", () => {
   // undefined, which floors to zero, which reports a delegation that cost real
   // money as having cost nothing.
   const tokens = mapSidecarTokens({
+    sdk_version: "0.1.9",
     usage: {
       prompt_token_count: 11554,
       cached_content_token_count: 9000,
@@ -202,10 +205,9 @@ test("sidecar token counts are read under Python's field names", () => {
       thoughts_token_count: 97,
     },
   });
-  // prompt_token_count INCLUDES cached, and computeCostUsd requires the two to
-  // be disjoint. Without the subtraction every cached token is billed twice —
-  // once at the full rate and once at the cached rate — which makes an
-  // effective cache look more expensive than no cache at all.
+  // On 0.1.9 prompt_token_count INCLUDES cached, and computeCostUsd requires
+  // the two to be disjoint. Without the subtraction every cached token is
+  // billed twice.
   assert.equal(tokens.input, 2554);
   assert.equal(tokens.input_cached, 9000);
   assert.equal(tokens.input + tokens.input_cached, 11554, "the input split must be lossless");
@@ -221,14 +223,67 @@ test("an absent, empty or impossible sidecar degrades to zeros rather than NaN",
     const t = mapSidecarTokens(input);
     assert.deepEqual(t, { input: 0, input_cached: 0, output: 0, output_reasoning: 0 });
   }
-  // Vendor edge case: a cached count larger than the prompt count. Unclamped it
-  // yields a negative fresh count, which flows into the run's totals and can
-  // make a phase appear to have cost less than nothing.
+  // A cached count larger than the prompt count with no recorded version is
+  // unverified, so it takes the disjoint reading: never a negative fresh count.
   const weird = mapSidecarTokens({
     usage: { prompt_token_count: 100, cached_content_token_count: 400 },
   });
-  assert.equal(weird.input, 0);
+  assert.equal(weird.input, 100);
   assert.equal(weird.input_cached, 400);
+  // The same numbers under 0.1.9 contradict its inclusive reading, so they are unverified too.
+  const contradictory = mapSidecarTokens({
+    sdk_version: "0.1.9",
+    usage: { prompt_token_count: 100, cached_content_token_count: 400 },
+  });
+  assert.equal(contradictory.input, 100);
+});
+
+// The SDK changed what its usage totals mean between releases. Both readings
+// below were checked against Google's own token counter (#52 in the Claude
+// harness).
+
+test("SDK 0.1.16 counts cached input on top of prompt_token_count", () => {
+  const tokens = mapSidecarTokens({
+    sdk_version: "0.1.16",
+    usage: {
+      prompt_token_count: 39439,
+      cached_content_token_count: 128714,
+      candidates_token_count: 4240,
+      thoughts_token_count: 0,
+    },
+  });
+  assert.equal(tokens.input, 39439, "subtracting here floors the dearest tokens to zero");
+  assert.equal(tokens.input_cached, 128714);
+  assert.equal(tokens.input + tokens.input_cached, 168153);
+  assert.equal(tokens.output, 4240);
+});
+
+test("SDK 0.1.9 counts cached input inside prompt_token_count", () => {
+  const tokens = mapSidecarTokens({
+    sdk_version: "0.1.9",
+    usage: { prompt_token_count: 24245, cached_content_token_count: 7113, candidates_token_count: 137 },
+  });
+  assert.equal(tokens.input, 17132);
+  assert.equal(tokens.input_cached, 7113);
+});
+
+test("only checked SDK versions have a reading; any other is unverified", () => {
+  assert.deepEqual(Object.keys(AGY_USAGE_SEMANTICS).sort(), ["0.1.16", "0.1.9"]);
+  assert.equal(sidecarUsageSemantics({ sdk_version: "0.1.9", usage: {} }), "inclusive");
+  assert.equal(sidecarUsageSemantics({ sdk_version: "0.1.16", usage: {} }), "disjoint");
+  for (const v of ["0.1.12", "0.1.18", "unknown", undefined]) {
+    assert.equal(sidecarUsageSemantics({ sdk_version: v, usage: {} }), "unverified", String(v));
+  }
+  assert.equal(sidecarUsageSemantics(null), "unverified");
+});
+
+test("an unverified version bills the larger, disjoint reading", () => {
+  const tokens = mapSidecarTokens({
+    sdk_version: "0.1.18",
+    usage: { prompt_token_count: 5000, cached_content_token_count: 2000, candidates_token_count: 10 },
+  });
+  assert.equal(tokens.input, 5000);
+  assert.equal(tokens.input_cached, 2000);
 });
 
 test("the tool-call count comes from the count, not from the capped list", () => {
@@ -307,7 +362,9 @@ test("the registry builds the worker adapter and prices it where it will run", (
       id: "flash-agsdk-worker",
       adapter: "antigravity-worker",
       model_name: "gemini-3.5-flash",
+      // A custom card, so the surcharge is asserted on rates this test controls.
       pricing: { input: 0.3, input_cached: 0.075, output: 2.5 },
+      pricing_override: true,
     };
 
     const global = createAdapter(base);

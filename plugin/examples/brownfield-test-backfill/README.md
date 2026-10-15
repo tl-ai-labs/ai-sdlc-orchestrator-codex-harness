@@ -14,8 +14,14 @@ src/
 
 ## Try it
 
+A brownfield run works on the git repository that holds the folder it starts in, so copy this
+folder out of the harness and make it a repository of its own first. Then start codex there as
+[docs/tutorial-first-run.md](../../../docs/tutorial-first-run.md) shows.
+
 ```bash
-cd plugin/examples/brownfield-test-backfill
+cp -R plugin/examples/brownfield-test-backfill ~/brownfield-test-backfill && cd ~/brownfield-test-backfill
+printf 'node_modules/\n.sdlc/\n' > .gitignore
+git init -q && git add -A && git commit -qm 'fixture'
 npm install
 npm test    # exits 0 with "no test files found" — no tests to run yet
 

@@ -17,13 +17,21 @@
  *
  * Usage:
  *   node dispatch.mjs --packet=<packet.json> --out=<result.json> \
- *                     [--policy=<name>] [--project-root=<path>] \
- *                     [--telemetry=<path>] [--work-dir=<path>]
- *   node dispatch.mjs --log-phase=<state> --task-type=skipped|in_session \
-                     --telemetry=<path> --out=<receipt.json> \
-                     [--module=<name>] [--reason=<text>] [--policy=<name>]
-   node dispatch.mjs --preflight --auth-mode=vendor [--policy=<name>] \
+ *                     --telemetry=<path> [--policy=<name>] [--policy-path=<file>] \
+ *                     [--project-root=<path>] [--work-dir=<path>]
+ *   node dispatch.mjs --log-phase=<phase> --task-type=skipped|in_session \
+ *                     --telemetry=<path> --out=<receipt.json> \
+ *                     [--module=<name>] [--reason=<text>] [--policy=<name>]
+ *   node dispatch.mjs --preflight --auth-mode=vendor [--policy=<name>] \
  *                     [--project-root=<path>] --out=<result.json>
+ *   node dispatch.mjs --load-policy [--policy=<name>] [--project-root=<path>] \
+ *                     --out=<policy.json>
+ *
+ * --telemetry is required for --packet and --log-phase. Every call run from a
+ * codex shell appends a CODEX_THREAD_ID marker to the run folder's
+ * driver-session.jsonl, which names the conductor's session file. Exit 0 on
+ * success; 1 when the call failed, preflight said ok:false, or the model call
+ * returned success:false (its result file is still written).
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -31,6 +39,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readMmoSelectFile } from "./mmoSelect.mjs";
+import { appendSessionMarker } from "./session-marker.mjs";
+import { isMain } from "../scripts/lib/is-main.mjs";
+import { exitAfterFlush } from "../scripts/lib/exit.mjs";
 
 const BRIDGE_CLIENT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -40,6 +51,13 @@ const BRIDGE_CLIENT = resolve(
   "dist",
   "driverClient.js",
 );
+
+/**
+ * run.mjs sets this in codex's environment to the policy file it resolved,
+ * so the bridge routes by the file the run priced and capped. --policy-path
+ * wins over it.
+ */
+export const POLICY_PATH_ENV = "MMO_POLICY_PATH";
 
 /** `--key=value` and bare `--flag` parsing. No positional arguments. */
 export function parseArgs(argv) {
@@ -71,18 +89,42 @@ export function bridgeEnv(projectRoot, env = process.env, readSelect = readMmoSe
  * a wrong or missing field here is the failure mode that costs a whole
  * premium phase to discover.
  */
-export function buildExecuteArgs({ packet, policy, projectRoot, telemetryPath, workDir }) {
+export function buildExecuteArgs({ packet, policy, policyPath, projectRoot, telemetryPath, workDir }) {
   const args = { packet };
   if (policy) args.policy_name = policy;
+  if (policyPath) args.policy_path = policyPath;
   if (projectRoot) args.project_root = projectRoot;
   if (telemetryPath) args.telemetry_path = telemetryPath;
   if (workDir) args.work_dir = workDir;
   return args;
 }
 
+/**
+ * A paid call with no telemetry line is spend no report or cost cap can see,
+ * so a dispatch refuses before it reads the packet or starts the bridge.
+ */
+export function requireTelemetryPath(args, what) {
+  if (typeof args.telemetry !== "string" || args.telemetry.trim() === "") {
+    throw new Error(
+      `dispatch: --telemetry=<path> is required for ${what}: a paid call with no telemetry line is spend ` +
+        "no report or cost cap can see. Pass the run's file, --telemetry='<output-dir>/telemetry.jsonl'.",
+    );
+  }
+  return args.telemetry;
+}
+
 /** Builds the `preflight_dispatch` argument object. */
-export function buildPreflightArgs({ authMode, policy, projectRoot }) {
+export function buildPreflightArgs({ authMode, policy, policyPath, projectRoot }) {
   const args = { auth_mode: authMode };
+  if (policy) args.policy_name = policy;
+  if (policyPath) args.policy_path = policyPath;
+  if (projectRoot) args.project_root = projectRoot;
+  return args;
+}
+
+/** Builds the `load_policy` argument object. */
+export function buildLoadPolicyArgs({ policy, projectRoot }) {
+  const args = {};
   if (policy) args.policy_name = policy;
   if (projectRoot) args.project_root = projectRoot;
   return args;
@@ -102,6 +144,10 @@ export function summarize(toolName, result, args = {}) {
     const models = (result?.models ?? []).map((m) => `${m.id}:${m.ok ? "ok" : "FAILED"}`).join(" ");
     return `preflight ok=${result?.ok === true} ${models}`.trim();
   }
+  if (toolName === "load_policy") {
+    const models = (result?.models ?? []).map((m) => `${m.id}:${m.effective_price?.basis ?? "UNPRICED"}`).join(" ");
+    return `policy name=${result?.name ?? "?"} priced_on=${result?.effective_prices_on ?? "?"} ${models}`.trim();
+  }
   const cost = result?.result?.cost_usd ?? result?.events?.[0]?.cost_usd;
   const model = result?.decision?.modelId ?? "unknown";
   const success = result?.result?.success;
@@ -113,11 +159,6 @@ function writeResult(outPath, payload) {
   writeFileSync(resolve(outPath), JSON.stringify(payload, null, 2) + "\n", "utf-8");
 }
 
-/**
- * Core dispatch. `connect` is injected so tests can exercise argument
- * construction, result writing and summarizing without a live bridge or
- * any vendor call.
- */
 /**
  * A zero-cost event for a phase that ran no model call — one the intent
  * skipped, or one the conductor completed in-session without dispatching.
@@ -133,9 +174,9 @@ function writeResult(outPath, payload) {
  * and they accrue to the driver loop rather than here; the reason string
  * carries that so the row explains itself.
  */
-export function buildLogEventArgs({ phase, taskType, module, reason, policyName, telemetryPath }) {
-  if (!phase) throw new Error("dispatch: --log-phase=<state> is required for --log-phase.");
-  if (!telemetryPath) {
+export function buildLogEventArgs({ phase, taskType, module, reason, policyName, policyPath, projectRoot, telemetryPath }) {
+  if (!phase) throw new Error("dispatch: --log-phase=<phase> is required for --log-phase.");
+  if (typeof telemetryPath !== "string" || telemetryPath.trim() === "") {
     throw new Error("dispatch: --telemetry=<path> is required for --log-phase — an unwritten event is not a record.");
   }
   const kind = taskType ?? "skipped";
@@ -146,6 +187,10 @@ export function buildLogEventArgs({ phase, taskType, module, reason, policyName,
   // the handler as undefined and fails inside appendEvent, not at validation.
   return {
     telemetry_path: telemetryPath,
+    // The bridge stamps the routing with the policy these resolve to, as execute_with_model would route.
+    ...(policyName ? { policy_name: policyName } : {}),
+    ...(policyPath ? { policy_path: policyPath } : {}),
+    ...(projectRoot ? { project_root: projectRoot } : {}),
     event: {
       pass: null,
       phase,
@@ -157,7 +202,7 @@ export function buildLogEventArgs({ phase, taskType, module, reason, policyName,
       routed_by: "manual",
       routing: {
         policy_name: policyName ?? null,
-        policy_version: 1,
+        policy_version: null,
         rule_index: -1,
         rule_reason:
           reason ??
@@ -175,17 +220,28 @@ export function buildLogEventArgs({ phase, taskType, module, reason, policyName,
   };
 }
 
+/**
+ * Core dispatch. `connect` is injected so tests can exercise argument
+ * construction, result writing and summarizing without a live bridge or
+ * any vendor call.
+ */
 export async function runDispatch(args, { connect, env = process.env } = {}) {
   const projectRoot = args["project-root"] ? resolve(args["project-root"]) : process.cwd();
   const outPath = args.out;
+  const policyFile = args["policy-path"] || env[POLICY_PATH_ENV];
+  const policyPath = policyFile ? resolve(policyFile) : undefined;
   if (!outPath) throw new Error("dispatch: --out=<path> is required — results are written to a file, never stdout.");
 
   const isPreflight = Boolean(args.preflight);
   const isLogPhase = Boolean(args["log-phase"]);
+  const isLoadPolicy = Boolean(args["load-policy"]);
   let toolName;
   let toolArgs;
 
-  if (isLogPhase) {
+  if (isLoadPolicy) {
+    toolName = "load_policy";
+    toolArgs = buildLoadPolicyArgs({ policy: args.policy, projectRoot });
+  } else if (isLogPhase) {
     toolName = "log_telemetry";
     toolArgs = buildLogEventArgs({
       phase: args["log-phase"],
@@ -193,6 +249,8 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
       module: args.module,
       reason: args.reason,
       policyName: args.policy,
+      policyPath,
+      projectRoot,
       telemetryPath: args.telemetry,
     });
   } else if (isPreflight) {
@@ -206,9 +264,11 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
     toolArgs = buildPreflightArgs({
       authMode: args["auth-mode"],
       policy: args.policy,
+      policyPath,
       projectRoot,
     });
   } else {
+    requireTelemetryPath(args, "--packet");
     if (!args.packet) throw new Error("dispatch: --packet=<path> is required.");
     let packet;
     try {
@@ -220,11 +280,17 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
     toolArgs = buildExecuteArgs({
       packet,
       policy: args.policy,
+      policyPath,
       projectRoot,
       telemetryPath: args.telemetry,
       workDir: args["work-dir"],
     });
   }
+
+  // Before connecting, so the bridge's cost cap already sees this call's thread.
+  const markerFrom = typeof args.telemetry === "string" ? args.telemetry : isPreflight && typeof outPath === "string" ? outPath : null;
+  const markerDir = markerFrom ? dirname(resolve(markerFrom)) : null;
+  appendSessionMarker(markerDir, { tool: toolName, policy: policyPath ?? args.policy ?? null }, { env });
 
   const bridge = await connect({ env: bridgeEnv(projectRoot, env) });
   try {
@@ -235,7 +301,13 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
     // now" signal in the whole run, and a caller that only checked the exit
     // code would read it as a pass — so the exit code carries the verdict
     // too, not just the payload.
-    const verdict = toolName === "preflight_dispatch" ? result?.ok === true : true;
+    // A model call that returned success:false wrote its result file; the exit code says it failed.
+    const verdict =
+      toolName === "preflight_dispatch"
+        ? result?.ok === true
+        : toolName === "execute_with_model"
+          ? result?.result?.success === true
+          : true;
     return { ok: verdict, toolName, result, summary: summarize(toolName, result, args) };
   } finally {
     await bridge.close();
@@ -243,16 +315,23 @@ export async function runDispatch(args, { connect, env = process.env } = {}) {
 }
 
 // Direct-execution gate so the test suite can import the pure helpers.
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMain(import.meta.url, process.argv[1])) {
   const args = parseArgs(process.argv.slice(2));
   const { connectBridge } = await import(BRIDGE_CLIENT);
   try {
-    const { ok, summary } = await runDispatch(args, { connect: connectBridge });
+    const { ok, summary, toolName, result } = await runDispatch(args, { connect: connectBridge });
     console.log(summary);
-    process.exit(ok ? 0 : 1);
+    if (!ok && toolName === "execute_with_model") {
+      const why = String(result?.result?.error ?? "no error recorded").split("\n")[0];
+      console.error(
+        `dispatch: the model call failed (terminal_reason=${result?.result?.terminal_reason ?? "?"}): ${why}. ` +
+          `The full result is in ${args.out}.`,
+      );
+    }
+    exitAfterFlush(ok ? 0 : 1);
   } catch (err) {
     // stderr, not stdout — the conductor reads stdout for the summary line.
     console.error(`dispatch failed: ${err?.message ?? err}`);
-    process.exit(1);
+    exitAfterFlush(1);
   }
 }

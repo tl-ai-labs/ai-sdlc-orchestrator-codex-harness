@@ -18,9 +18,15 @@ The `docs` intent turns that into: a project README and JSDoc-annotated `auth.js
 
 ## Try it
 
+A brownfield run works on the git repository that holds the folder it starts in, so copy this
+folder out of the harness and make it a repository of its own first. Then start codex there as
+[docs/tutorial-first-run.md](../../../docs/tutorial-first-run.md) shows.
+
 ```bash
-cd plugin/examples/brownfield-docs-gen
-# In Claude Code, in this directory:
+cp -R plugin/examples/brownfield-docs-gen ~/brownfield-docs-gen && cd ~/brownfield-docs-gen
+printf 'node_modules/\n.sdlc/\n' > .gitignore
+git init -q && git add -A && git commit -qm 'fixture'
+# In a codex session started in this folder:
 $mmo-codex:brownfield
 # Pick intent: docs
 # Confirm scope at Gate 0: src/auth.js + README.md

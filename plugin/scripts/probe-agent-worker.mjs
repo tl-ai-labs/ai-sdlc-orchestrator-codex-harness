@@ -11,16 +11,20 @@
  * gemini-3.5-flash global: 12,245/154 tokens, $0.0198.
  *
  * Usage:
- *   node probe-agent-worker.mjs                  # opus-plus-flash
+ *   node probe-agent-worker.mjs [--project-root=<dir>]   # the policy a run there would use
  *   node probe-agent-worker.mjs --policy=<name>
+ *   node probe-agent-worker.mjs --telemetry=<path>   # where its spend is recorded
  *
  * Exit 0: delegation completed and priced. Exit 1: cause named in words.
  */
 
-import { existsSync, mkdtempSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { pinnedSdkVersion } from "../codex/verify-setup.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 // ─── pure helpers ─────────────────────────────────────────────────────
 
@@ -39,7 +43,7 @@ export function agentLeafFrom(policy) {
     throw new Error(
       `Policy '${policy?.name ?? "?"}' declares no agent-worker leaf ` +
         `(no model with adapter: ${AGENT_ADAPTER}), so there is nothing here to probe. ` +
-        `The shipped policy that has one is opus-plus-flash.`
+        `The shipped policies that have one are gpt-plus-flash, gpt-plus-flash-38, gpt-seat-plus-flash and flash-agsdk-only.`
     );
   }
   if (leaves.length > 1) {
@@ -104,7 +108,7 @@ export function classifyFailure(errorText) {
     return {
       id: "sdk-missing",
       headline: "The Antigravity SDK is not installed in the interpreter that ran the worker.",
-      fix: "node <plugin>/scripts/verify-setup.mjs --fix (builds the worker virtualenv and installs it)",
+      fix: "node <plugin>/codex/verify-setup.mjs --fix (builds the worker virtualenv and installs it)",
     };
   }
   if (has("DefaultCredentialsError", "could not automatically determine credentials", "default credentials were not found")) {
@@ -174,24 +178,85 @@ export function formatUsd(amount) {
   return `$${n.toFixed(6)}`;
 }
 
+const perMillion = (c) => [c.input, c.input_cached, c.output].map((n) => `$${Number(n.toFixed(6))}`).join("/");
+
 /**
- * Say whether the billed rates match the pinned rates. They differ by the
- * regional +10% surcharge (Gemini 3+ non-global). Stated in words so a reader
- * doesn't read the difference as a bug.
+ * Say whether the billed card is the price card or that card plus Google's
+ * regional +10% surcharge (Gemini 3+ non-global), so a reader does not read
+ * the difference as a bug. `card` is the unsurcharged card priced today.
  */
-export function pricingNote(pinned, billed, region) {
-  const same =
-    pinned?.input === billed?.input &&
-    pinned?.input_cached === billed?.input_cached &&
-    pinned?.output === billed?.output;
-  if (same) {
-    return `billed at the policy's pinned rates (region '${region}' carries no surcharge)`;
-  }
+export function pricingNote(card, billed, region, basis = "list") {
+  if (!card || !billed) return "not priced today by the price list (src/prices.ts), so the delegation will be refused";
+  const source = basis === "custom" ? "the policy's pricing_override rates" : "the price list's rates";
+  const same = card.input === billed.input && card.input_cached === billed.input_cached && card.output === billed.output;
+  if (same) return `billed at ${source}, ${perMillion(card)} per million (region '${region}' carries no surcharge)`;
   return (
-    `billed at the pinned rates plus Google's regional surcharge, because this leaf runs in ` +
-    `'${region}' rather than the global endpoint: in $${pinned.input}/$${pinned.input_cached}/$${pinned.output} ` +
-    `→ $${billed.input}/$${billed.input_cached}/$${billed.output} per million (input/cached/output)`
+    `billed at ${source} plus Google's regional surcharge, because this leaf runs in ` +
+    `'${region}' rather than the global endpoint: in ${perMillion(card)} → ${perMillion(billed)} ` +
+    `per million (input/cached/output)`
   );
+}
+
+/** The `rates`, source and verified lines the probe prints for what a delegation today bills. */
+export function priceLines(priced, leaf, region) {
+  if (priced.unpriced) return [`  rates       ${pricingNote(null, null, region)}: ${priced.reason}`];
+  const { price, billed } = priced;
+  const lines = [`  rates       ${pricingNote(price.pricing, billed, region, price.basis)}`];
+  if (price.entry) {
+    lines.push(`  listed from ${price.entry.source}`);
+    lines.push(`  verified    ${price.entry.verified}`);
+  } else {
+    if (leaf.pricing_source) lines.push(`  pinned from ${leaf.pricing_source}`);
+    if (leaf.pricing_last_verified) lines.push(`  verified    ${leaf.pricing_last_verified}`);
+  }
+  for (const w of price.warnings ?? []) lines.push(`  note        ${w}`);
+  return lines;
+}
+
+/**
+ * Where the probe's spend is recorded: `--telemetry=<path>`, else the
+ * project's pre-check telemetry when `cwd` (the project root) holds a
+ * `.sdlc/`, else beside the probe's own evidence. Never creates a `.sdlc/`
+ * that is not there.
+ */
+export function probeTelemetryPath({ flag, cwd, evidenceDir, exists = existsSync }) {
+  if (flag) return resolve(cwd, flag);
+  if (exists(join(cwd, ".sdlc"))) return join(cwd, ".sdlc", "pre-check", "telemetry.jsonl");
+  return join(evidenceDir, "telemetry.jsonl");
+}
+
+/** The probe's telemetry lines: the bridge's own event shape, marked as a manual call. */
+export function probeSpendEvents({ attemptEvents, policy, leaf, adapterProvenance, packet, result, ts }) {
+  const identity = {
+    packet,
+    decision: { modelId: leaf.id, reason: "agent-worker connectivity probe", ruleIndex: -1 },
+    policy,
+    modelName: leaf.model_name,
+    adapterProvenance,
+  };
+  return attemptEvents(identity, result, ts).map((ev) => ({ ...ev, routed_by: "manual" }));
+}
+
+/**
+ * How the delegation's input was read, from the SDK version its sidecar
+ * recorded. `--fix` rebuilds only the plugin's own .venv, so with
+ * GEMINI_WORKER_PYTHON set the fix names that interpreter instead.
+ */
+export function sdkLines(sidecar, usageSemantics, { pythonOverride, pin } = {}) {
+  if (!sidecar) return ["  sdk         no usage sidecar was written"];
+  const semantics = usageSemantics(sidecar);
+  const lines = [`  sdk         ${sidecar.sdk ?? "google-antigravity"} ${sidecar.sdk_version ?? "unknown"} (input read as ${semantics})`];
+  if (semantics === "unverified") {
+    const fix = pythonOverride
+      ? `install the pin where GEMINI_WORKER_PYTHON points (${pythonOverride} -m pip install ` +
+        `google-antigravity==${pin ?? "<the version requirements.txt pins>"}), or unset GEMINI_WORKER_PYTHON ` +
+        "and run verify-setup.mjs --fix"
+      : "rebuild the worker from requirements.txt (verify-setup.mjs --fix)";
+    lines.push(
+      `  warning     this SDK version is not in AGY_USAGE_SEMANTICS, so its input was billed on the larger reading; ${fix}`,
+    );
+  }
+  return lines;
 }
 
 /** `--flag=value` out of an argv, so the parsing is testable without a process. */
@@ -211,17 +276,21 @@ async function loadServerModules(pluginRoot) {
   const serverDir = join(pluginRoot, "mcp", "model-dispatch");
   const distPolicy = join(serverDir, "dist", "policy.js");
   const distAdapters = join(serverDir, "dist", "adapters", "index.js");
-  if (!existsSync(distPolicy) || !existsSync(distAdapters)) {
+  const distEvents = join(serverDir, "dist", "dispatchEvents.js");
+  const distWorker = join(serverDir, "dist", "delegation", "workerProcess.js");
+  if (![distPolicy, distAdapters, distEvents, distWorker].every((p) => existsSync(p))) {
     throw new Error(
       `The bundled server is not built, so there is no adapter to probe with. ` +
-        `Run: node ${join(pluginRoot, "scripts", "verify-setup.mjs")} --fix`
+        `Run: node ${join(pluginRoot, "codex", "verify-setup.mjs")} --fix`
     );
   }
-  const [{ loadPolicy }, { createAdapter }] = await Promise.all([
+  const [{ loadPolicy }, { createAdapter }, { attemptEvents }, { evidenceStem, sidecarUsageSemantics }] = await Promise.all([
     import(`file://${distPolicy}`),
     import(`file://${distAdapters}`),
+    import(`file://${distEvents}`),
+    import(`file://${distWorker}`),
   ]);
-  return { loadPolicy, createAdapter };
+  return { loadPolicy, createAdapter, attemptEvents, evidenceStem, sidecarUsageSemantics };
 }
 
 /**
@@ -240,15 +309,16 @@ function makeProbeDirs() {
 async function main() {
   const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const argv = process.argv.slice(2);
-  const policyName = readFlag(argv, "policy") ?? "opus-plus-flash";
+  const policyName = readFlag(argv, "policy");
+  const projectRoot = readFlag(argv, "project-root") ?? process.cwd();
   const modelId = readFlag(argv, "model");
   const log = (m = "") => console.log(m);
 
   log("\nAI-SDLC orchestrator — agent-worker probe");
   log("  One trivial delegation, in an empty temporary workspace, at real cost.\n");
 
-  const { loadPolicy, createAdapter } = await loadServerModules(pluginRoot);
-  const policy = loadPolicy({ policyName });
+  const { loadPolicy, createAdapter, attemptEvents, evidenceStem, sidecarUsageSemantics } = await loadServerModules(pluginRoot);
+  const policy = loadPolicy({ policyName, projectRoot });
   const leaf = modelId ? agentLeafById(policy, modelId) : agentLeafFrom(policy);
 
   // Constructor is itself a gate — resolves project, worker script, and
@@ -260,16 +330,15 @@ async function main() {
   log(`  project     ${adapter.project}`);
   log(`  region      ${adapter.location}`);
   log(`  interpreter ${adapter.python}`);
-  log(`  rates       ${pricingNote(leaf.pricing, adapter.billedPricing, adapter.location)}`);
-  if (leaf.pricing_source) log(`  pinned from ${leaf.pricing_source}`);
-  if (leaf.pricing_last_verified) log(`  verified    ${leaf.pricing_last_verified}`);
+  for (const line of priceLines(adapter.pricingOn(), leaf, adapter.location)) log(line);
 
   const dirs = makeProbeDirs();
   log(`\n  workspace   ${dirs.workspace}  (empty, temporary)`);
   log(`  evidence    ${dirs.evidence}`);
   log("\n  Delegating…");
 
-  const result = await adapter.execute(probePacket(), undefined, {
+  const packet = probePacket();
+  const result = await adapter.execute(packet, undefined, {
     work_dir: dirs.workspace,
     telemetry_path: join(dirs.evidence, "telemetry.jsonl"),
   });
@@ -280,6 +349,39 @@ async function main() {
       `(in ${(result.latency_ms / 1000).toFixed(1)}s)`
   );
   log(`  cost        ${formatUsd(result.cost_usd)}`);
+  const sidecarPath = join(dirs.evidence, "delegation", `worker-usage-${evidenceStem(packet)}.json`);
+  let sidecar = null;
+  try { sidecar = JSON.parse(readFileSync(sidecarPath, "utf8")); } catch { /* none written */ }
+  let pin = null;
+  try { pin = pinnedSdkVersion(readFileSync(join(pluginRoot, "mcp", "model-dispatch", "worker", "requirements.txt"), "utf8")); } catch { /* unreadable */ }
+  for (const line of sdkLines(sidecar, sidecarUsageSemantics, { pythonOverride: process.env.GEMINI_WORKER_PYTHON, pin })) log(line);
+
+  // A paid call, so it is recorded like a dispatch.
+  const telemetryFlag = readFlag(argv, "telemetry");
+  const spendPath = probeTelemetryPath({
+    flag: telemetryFlag && resolve(telemetryFlag),
+    cwd: resolve(projectRoot),
+    evidenceDir: dirs.evidence,
+  });
+  try {
+    mkdirSync(dirname(spendPath), { recursive: true });
+    const events = probeSpendEvents({
+      attemptEvents,
+      policy,
+      leaf,
+      adapterProvenance: adapter.costProvenance,
+      packet,
+      result,
+      ts: new Date().toISOString(),
+    });
+    appendFileSync(spendPath, events.map((ev) => JSON.stringify(ev) + "\n").join(""), "utf8");
+    log(`  recorded    ${spendPath}`);
+    if (dirname(spendPath) === dirs.evidence) {
+      log("              (no report or cost cap reads it here: run from the project root, or pass --telemetry=<path>)");
+    }
+  } catch (err) {
+    log(`  recorded    nowhere: could not write ${spendPath} (${err?.message ?? err})`);
+  }
 
   if (result.success) {
     log("\n  ✓ The agent path works. A run selecting this leaf will dispatch, bill and be priced.");
@@ -298,7 +400,7 @@ async function main() {
 }
 
 // Direct-execution gate so the test suite can import the pure helpers.
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMain(import.meta.url, process.argv[1])) {
   main()
     .then((code) => process.exit(code))
     .catch((err) => {

@@ -1,6 +1,6 @@
 {
   "name": "mmo-codex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Multi-model AI-SDLC pipeline for the Codex CLI: GPT conductor, GPT judgment worker, Gemini Flash mechanical tier, with per-phase cost attribution.",
   "author": {
     "name": "Tilicho Labs"
@@ -16,6 +16,7 @@
     "cost-attribution"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "mcpServers": {
     "model-dispatch": {
       "command": "node",

@@ -125,14 +125,14 @@ test("no personal contact details are embedded in shipped files", () => {
 });
 
 test("no Anthropic credential is named anywhere a user would configure (D9)", () => {
-  // The carried adapters and their replay-fixture policies legitimately name
-  // Anthropic models. What must never appear is an instruction to obtain or
-  // set an Anthropic credential.
+  // The carried adapters and the Claude harness policies kept as test
+  // fixtures legitimately name Anthropic models. What must never appear is an
+  // instruction to obtain or set an Anthropic credential.
   const offenders = [];
   for (const file of textFiles()) {
     const rel = relative(ROOT, file);
-    // Carried policy fixtures and the dormant adapters are exempt by design.
-    if (rel.startsWith("plugin/config/policies/opus")) continue;
+    // The Claude policy fixtures and the dormant adapters are exempt by design.
+    if (rel.startsWith("tools/test/fixtures/policies/claude/")) continue;
     if (rel.includes("Anthropic") || rel.includes("ClaudeCli")) continue;
     if (rel.startsWith("plugin/mcp/model-dispatch/test/")) continue;
     if (rel === "tools/test/publish.test.mjs") continue; // this file names the patterns

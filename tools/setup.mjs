@@ -50,6 +50,7 @@ import {
   SEAT_POLICY,
 } from "../plugin/codex/verify-setup.mjs";
 import { writeMmoSelectFile } from "../plugin/codex/mmoSelect.mjs";
+import { staleBridgeBuild, staleFilesShown } from "../plugin/codex/bridge-build.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -205,7 +206,9 @@ if (wantAgent) {
 // [5] Build the bridge
 step("Bundled MCP server");
 const { serverDir, distEntry, nodeModules } = mcpPaths(PLUGIN_ROOT);
-if (existsSync(distEntry) && existsSync(nodeModules)) {
+const staleBuild = staleBridgeBuild(PLUGIN_ROOT);
+if (staleBuild) warn(`The bridge's build is older than its source (${staleFilesShown(staleBuild)}).`);
+if (existsSync(distEntry) && existsSync(nodeModules) && !staleBuild) {
   ok("Already installed and built.");
 } else if (await askYesNo("Install dependencies and build the bridge now?", true)) {
   for (const [label, args] of [["installing dependencies", ["ci"]], ["building", ["run", "build"]]]) {
@@ -270,12 +273,17 @@ if (blocked) {
   console.log(`\nTo re-check without the questions:`);
   console.log(`  node plugin/codex/verify-setup.mjs`);
 } else {
-  console.log(`${c.bold}Setup complete.${c.reset} Run the pipeline against a brief:\n`);
+  console.log(`${c.bold}Setup complete.${c.reset} In a codex session in your project, start a run with a skill:\n`);
+  console.log(`  $mmo-codex:greenfield   a new app from a brief`);
+  console.log(`  $mmo-codex:brownfield   work on an existing repository`);
+  console.log(`\nOr run the quick-demo brief headlessly, which also checks the conductor's cost against codex's own count:\n`);
+  console.log(`  mkdir -p ~/mmo-runs/ping`);
   console.log(`  node plugin/codex/run.mjs \\`);
-  console.log(`    --brief=./brief.md \\`);
-  console.log(`    --project-root="$(pwd)" \\`);
-  console.log(`    --output-dir="$(pwd)/.sdlc"`);
-  console.log(`\n${c.dim}Add --dry-run to see the pinned invocation without spending anything.${c.reset}`);
+  console.log(`    --brief=examples/quick-demo/brief.md \\`);
+  console.log(`    --project-root="$HOME/mmo-runs/ping" \\`);
+  console.log(`    --mode=greenfield`);
+  console.log(`\n${c.dim}It asks you at each gate; add --gates=auto-approve for an unattended run.${c.reset}`);
+  console.log(`${c.dim}Add --dry-run to see the pinned invocation without spending anything.${c.reset}`);
   console.log(`${c.dim}Re-check this setup any time: node plugin/codex/verify-setup.mjs${c.reset}`);
 }
 

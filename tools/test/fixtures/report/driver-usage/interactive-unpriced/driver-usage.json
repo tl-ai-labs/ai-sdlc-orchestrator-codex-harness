@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "route": "interactive",
+  "source": "session-file",
+  "cost_source": "session file (interactive; no exec stream to cross-check; unverified); INCOMPLETE: unpriced tokens excluded",
+  "verified": false,
+  "provenance": "modeled",
+  "thread_ids": [
+    "019a0000-0000-7000-8000-0000000000a1"
+  ],
+  "threads": [
+    {
+      "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+      "rollout": "found",
+      "rollout_file": "sessions/2026/10/13/rollout-2026-10-13T10-00-00-019a0000-0000-7000-8000-0000000000a1.jsonl",
+      "reason": null,
+      "booked_from": "session-file",
+      "usage_series": "token_usage_record",
+      "originator": "codex-tui",
+      "source": "vscode",
+      "cli_version": "0.160.1",
+      "plan_type": null,
+      "window": {
+        "start": "2026-10-13T10:00:01.000Z",
+        "end": "2026-10-13T10:00:02.100Z",
+        "start_anchor": "command_turn",
+        "end_anchor": "last_marker_turn",
+        "exact": true,
+        "lower_bound": false,
+        "provisional": false
+      }
+    }
+  ],
+  "window": {
+    "start": "2026-10-13T10:00:01.000Z",
+    "end": "2026-10-13T10:00:02.100Z",
+    "start_anchor": "command_turn",
+    "end_anchor": "last_marker_turn",
+    "exact": true,
+    "lower_bound": false,
+    "provisional": false
+  },
+  "pin": {
+    "model": "gpt-5.6-terra",
+    "effort": "high"
+  },
+  "policy": {
+    "name": "gpt-plus-flash",
+    "version": 1
+  },
+  "turns": [
+    {
+      "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+      "turn_id": "turn-0001-019a0000",
+      "invocation": null,
+      "usage_source": "session-file",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "started_at": "2026-10-13T10:00:01.000Z",
+      "ended_at": "2026-10-13T10:00:01.050Z",
+      "ended_by": "complete",
+      "requests": 1,
+      "compaction_requests": 0,
+      "web_search_calls": 0,
+      "tokens": {
+        "input_tokens": 5000,
+        "cached_input_tokens": 4000,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 50,
+        "reasoning_output_tokens": 0
+      },
+      "cost_usd": null,
+      "unpriced_reason": "session model gpt-6.1-sol is not the pin gpt-5.6-terra",
+      "price_tier": null,
+      "long_context_requests": 0
+    },
+    {
+      "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+      "turn_id": "turn-0002-019a0000",
+      "invocation": null,
+      "usage_source": "session-file",
+      "model": "gpt-5.6-terra",
+      "effort": "high",
+      "started_at": "2026-10-13T10:00:02.050Z",
+      "ended_at": "2026-10-13T10:00:02.100Z",
+      "ended_by": "complete",
+      "requests": 1,
+      "compaction_requests": 0,
+      "web_search_calls": 0,
+      "tokens": {
+        "input_tokens": 20000,
+        "cached_input_tokens": 10000,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1000,
+        "reasoning_output_tokens": 0
+      },
+      "cost_usd": 0.034,
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
+    }
+  ],
+  "tokens": {
+    "input_tokens": 25000,
+    "cached_input_tokens": 14000,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 1050,
+    "reasoning_output_tokens": 0,
+    "requests": 2,
+    "compaction_requests": 0,
+    "web_search_calls": 0
+  },
+  "cost_usd_modeled": 0.034,
+  "cost_complete": false,
+  "unpriced": [
+    {
+      "model": "gpt-6.1-sol",
+      "turns": 1,
+      "requests": 1,
+      "tokens": {
+        "input_tokens": 5000,
+        "cached_input_tokens": 4000,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 50,
+        "reasoning_output_tokens": 0
+      },
+      "reason": "session model gpt-6.1-sol is not the pin gpt-5.6-terra"
+    }
+  ],
+  "cross_check": null,
+  "excluded_threads": [],
+  "tier_unverified_turns": 0,
+  "price_list_verified": "2026-10-13",
+  "collected_at": "2026-10-13T11:00:00.000Z"
+}

@@ -1,55 +1,48 @@
 /**
- * Telemetry event reader for `codex exec --json` output.
+ * Reader for the `codex exec --json` stream and the driver-events.jsonl
+ * record run.mjs writes from it.
  *
- * Two verified facts drive this module's shape
- * (docs/verification/p1-codex-runtime.md, checks 5 and 9):
+ * Codex stamps no time on its events, so a v1 record carries the driver's own
+ * `received_at`. Every executed shell command arrives wrapped as
+ * `/bin/bash -lc '…'` or `/bin/zsh -lc '…'`, unwrapped here.
  *
- *   1. No event in the stream carries a timestamp. This reader stamps its
- *      own arrival time on every normalized event, the same way
- *      `normalizeDirectTierEvent` does for the direct tier in the bridge.
- *   2. Every executed shell command arrives wrapped as `/bin/bash -lc '…'`
- *      on this platform (Linux/WSL2) — the port track document's inherited
- *      finding named `/bin/zsh -lc '…'` from a macOS probe machine. Both
- *      wrappers are unwrapped here; which one a given machine actually uses
- *      is exactly the kind of thing Document B section 2 asks each
- *      contributor's platform to confirm for itself, not assume.
- *
- * Consumes the raw JSONL text `codex exec --json` writes to stdout. Produces
- * two things a driver script needs: a normalized trajectory (for the human-
- * readable run log) and, separately, one TelemetryEvent per turn with
- * `provenance: "modeled"` carrying the driver's own token cost — the
- * conductor never dispatches through `execute_with_model` (D1), so its cost
- * never appears in the bridge's own telemetry unless this reader adds it.
+ * The conductor never dispatches through `execute_with_model` (D1), so its
+ * cost reaches telemetry only as the `provenance: "modeled"` rows built here,
+ * each priced from the dated price list (src/prices.ts) on the day its turn
+ * ended.
  */
 
-import { computeCostUsd } from "../../mcp/model-dispatch/dist/pricing.js";
+import {
+  driverTurns,
+  parseDriverRecords,
+  priceDriverTurn,
+  toDriverRecords,
+} from "../../mcp/model-dispatch/dist/driverUsage.js";
+import { fixedDriverPriceFn } from "../../mcp/model-dispatch/dist/driverPricing.js";
 
 const SHELL_WRAP_RE = /^\/bin\/(?:ba|z)sh\s+-lc\s+(['"])([\s\S]*)\1$/;
 
-/**
- * Strip a `/bin/bash -lc '…'` or `/bin/zsh -lc '…'` wrapper, returning the
- * inner command. A command that isn't wrapped (already bare) is returned
- * unchanged — this is a defensive unwrap, not a required transform.
- */
+/** Strips a `/bin/bash -lc '…'` or `/bin/zsh -lc '…'` wrapper; a bare command is returned unchanged. */
 export function unwrapShellCommand(command) {
   if (typeof command !== "string") return command;
   const m = SHELL_WRAP_RE.exec(command);
   return m ? m[2] : command;
 }
 
+function withUnwrappedCommand(event) {
+  if (event.item?.type === "command_execution" && typeof event.item.command === "string") {
+    return { ...event, item: { ...event.item, unwrapped_command: unwrapShellCommand(event.item.command) } };
+  }
+  return event;
+}
+
 /**
- * Parse `codex exec --json`'s JSONL text into an array of normalized
- * events. Each event carries `ts` (this reader's own clock, not codex's —
- * codex supplies none) and, for `command_execution` items, an
- * `unwrapped_command` field alongside the original.
- *
- * Malformed lines are skipped, not thrown on — a driver script reading a
- * live process's stdout should not crash the whole run over one truncated
- * line at a stream boundary.
+ * Parses bare `codex exec --json` text into events stamped with `ts` from
+ * `now`. Malformed lines are skipped.
  */
 export function parseEventStream(jsonlText, now = () => new Date().toISOString()) {
   const events = [];
-  for (const line of jsonlText.split("\n")) {
+  for (const line of String(jsonlText ?? "").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     let raw;
@@ -58,22 +51,44 @@ export function parseEventStream(jsonlText, now = () => new Date().toISOString()
     } catch {
       continue;
     }
-    const ts = now();
-    const event = { ts, ...raw };
-    if (raw.item?.type === "command_execution" && typeof raw.item.command === "string") {
-      event.item = { ...raw.item, unwrapped_command: unwrapShellCommand(raw.item.command) };
-    }
-    events.push(event);
+    if (!raw || typeof raw !== "object") continue;
+    events.push(withUnwrappedCommand({ ts: now(), ...raw }));
   }
   return events;
 }
 
 /**
- * Every `turn.completed` event's `usage` block, in stream order. `codex
- * exec --json` never echoes back which model or effort actually answered
- * (P1 check 7's caveat) — usage is keyed by turn index here, not by model,
- * because the pin is asserted separately (see fairnessPin.mjs), not read
- * back from this stream.
+ * Records from driver-events.jsonl text, v1 or legacy (bare codex events).
+ * Legacy events carry no arrival time; with `now`, each one is stamped with it.
+ */
+export function readDriverRecord(text, now) {
+  if (!now) return parseDriverRecords(text);
+  return toDriverRecords(parseEventStream(text, now));
+}
+
+/**
+ * The codex events inside a record, each stamped with `ts` = received_at,
+ * its invocation and its thread id.
+ */
+export function codexEvents(records) {
+  const out = [];
+  for (const rec of records) {
+    if (rec.kind !== "codex" || !rec.event) continue;
+    out.push(
+      withUnwrappedCommand({
+        ts: rec.received_at ?? null,
+        invocation: rec.invocation,
+        thread_id: rec.thread_id ?? null,
+        ...rec.event,
+      }),
+    );
+  }
+  return out;
+}
+
+/**
+ * Every `turn.completed` usage block, in stream order. On codex 0.160.1 the
+ * value is the thread's running total, not the turn's own usage.
  */
 export function extractTurnUsage(events) {
   const usages = [];
@@ -87,59 +102,83 @@ export function extractTurnUsage(events) {
   return usages;
 }
 
+const RULE_REASON =
+  "driver loop cost — never dispatched through execute_with_model (D1); modeled from the codex exec " +
+  "--json thread totals (each turn priced as the difference from the previous total), not a routed call";
+
+/** `opts.priceFn` prices the turn; a bare `opts.pricing` card is accepted and labelled custom. */
+function turnPricing(opts) {
+  const priceFn = opts.priceFn ?? (opts.pricing ? fixedDriverPriceFn(opts.pricing) : null);
+  if (!priceFn) throw new Error("event-reader: priceFn is required; a driver row is priced from the price list.");
+  return { model: opts.model, priceFn, requestsFor: opts.requestsFor, now: opts.now };
+}
+
 /**
- * Build one `provenance: "modeled"` TelemetryEvent per turn from the parsed
- * stream's usage data, priced at the given pricing block — pass the same
- * `pricing` object the official policy's `gpt` model config carries
- * (plugin/config/policies/gpt-plus-flash.yaml), so a pricing re-verification
- * only ever happens in one place.
- *
- * `phase`/`task_type`/`module` describe driver-loop work, not a dispatched
- * packet — there is no TaskPacket behind these tokens, so the values are
- * fixed constants rather than read from one.
+ * One driver-cost-modeled.jsonl row for a DriverTurn (see driverUsage.ts).
+ * A complete turn no card prices keeps its tokens, with cost_usd null and
+ * the reason in unpriced_reason.
+ */
+export function driverCostRow(turn, opts) {
+  const { runId, model, policyName, policyVersion = 1 } = opts;
+  const complete = turn.status === "complete" && turn.delta;
+  const priced = complete ? priceDriverTurn(turn, turnPricing(opts)) : null;
+  const cacheWrite = complete ? turn.delta.cache_write_input_tokens : 0;
+  return {
+    ts: turn.ended_at ?? turn.started_at ?? null,
+    pass: runId,
+    phase: "driver_loop",
+    task_type: "conductor",
+    task_id: `driver-i${turn.invocation}-t${turn.turn}`,
+    module: "driver",
+    model,
+    provenance: "modeled",
+    routed_by: "manual",
+    routing: { policy_name: policyName, policy_version: policyVersion, rule_index: -1, rule_reason: RULE_REASON },
+    input_tokens: priced ? priced.tokens.input : null,
+    input_tokens_cached: priced ? priced.tokens.input_cached : null,
+    // Inside input_tokens, and billed as fresh input: OpenAI charges no premium for writing the cache.
+    ...(cacheWrite > 0 ? { input_tokens_cache_write: cacheWrite } : {}),
+    output_tokens: priced ? priced.tokens.output : null,
+    output_tokens_reasoning: priced ? priced.reasoning : null,
+    cost_usd: priced ? priced.cost_usd : null,
+    price_basis: priced?.price_basis ?? null,
+    price_tier: priced?.price_tier ?? null,
+    price_verified: priced?.price_verified ?? null,
+    ...(priced?.long_context_requests ? { long_context_requests: priced.long_context_requests } : {}),
+    ...(priced?.unpriced_reason ? { unpriced_reason: priced.unpriced_reason } : {}),
+    latency_ms: null,
+    success: Boolean(complete),
+    retry_count: 0,
+    invocation: turn.invocation,
+    thread_id: turn.thread_id,
+    status: complete ? "complete" : "incomplete",
+    incomplete_reason: complete ? null : turn.incomplete_reason,
+    // The task_id of the later row whose tokens hold this turn's.
+    ...(!complete && turn.covered_by ? { covered_by: `driver-i${turn.covered_by.invocation}-t${turn.covered_by.turn}` } : {}),
+    usage_source: "exec-stream",
+    ...(turn.flags?.length ? { driver_flags: turn.flags } : {}),
+  };
+}
+
+function requirePolicyName(opts) {
+  if (typeof opts?.policyName !== "string" || !opts.policyName) {
+    throw new Error("event-reader: policyName is required; a driver row names the policy the run used.");
+  }
+}
+
+/** Modeled rows, complete and incomplete, for every driver turn in a run's records. */
+export function modeledDriverCostRows(records, opts) {
+  requirePolicyName(opts);
+  return driverTurns(records, { baselines: opts.baselines }).map((t) => driverCostRow(t, opts));
+}
+
+/**
+ * The same rows for an already-parsed bare stream (parseEventStream output),
+ * which carries no invocation markers: each thread.started opens one.
+ * Takes `pass` as the run id for compatibility with older callers.
  */
 export function modeledDriverCostEvents(events, opts) {
-  const { pass, model, pricing, now = () => new Date().toISOString() } = opts;
-  const usages = extractTurnUsage(events);
-  return usages.map(({ turn_index, usage }) => {
-    // Codex reports `input_tokens` INCLUSIVE of `cached_input_tokens`, but
-    // computeCostUsd expects the two to be disjoint — it prices `input` at
-    // the fresh rate and `input_cached` at the discounted one, and sums both.
-    // Passing the inclusive total charges every cached token twice: once at
-    // full rate, once at the cache rate. On a real run that was a 7x
-    // overstatement ($12.01 reported against $1.69 actual), almost all of it
-    // invented, because an agentic loop re-sends its context every step and
-    // ~97% of the input was cache reads.
-    const cached = usage.cached_input_tokens ?? 0;
-    const tokens = {
-      input: Math.max(0, (usage.input_tokens ?? 0) - cached),
-      input_cached: cached,
-      output: usage.output_tokens ?? 0,
-    };
-    return {
-      ts: now(),
-      pass,
-      phase: "driver_loop",
-      task_type: "conductor",
-      task_id: `driver-turn-${turn_index}`,
-      module: "driver",
-      model,
-      provenance: "modeled",
-      routed_by: "manual",
-      routing: {
-        policy_name: "gpt-plus-flash",
-        policy_version: 1,
-        rule_index: -1,
-        rule_reason: "driver loop cost — never dispatched through execute_with_model (D1); modeled from codex exec --json turn usage, not a routed call",
-      },
-      input_tokens: tokens.input,
-      input_tokens_cached: tokens.input_cached,
-      output_tokens: tokens.output,
-      output_tokens_reasoning: usage.reasoning_output_tokens,
-      cost_usd: computeCostUsd(tokens, pricing),
-      latency_ms: null,
-      success: true,
-      retry_count: 0,
-    };
-  });
+  requirePolicyName(opts);
+  const records = toDriverRecords(events);
+  return modeledDriverCostRows(records, { ...opts, runId: opts.runId ?? opts.pass });
 }

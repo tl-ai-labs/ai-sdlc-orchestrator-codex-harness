@@ -16,6 +16,7 @@ import type { AttemptRecord, ExecutionResult, ModelConfig, TaskPacket } from "..
 import { estimateTokens } from "../pricing.js";
 import type { ModelAdapter } from "./ModelAdapter.js";
 import { splitStableFromDynamic } from "./BuiltinAnthropicAdapter.js";
+import { DispatchPricer, refusedResult, type Clock } from "./dispatchPricer.js";
 
 type SpawnFn = typeof spawn;
 type VersionProbe = () => void;
@@ -26,6 +27,7 @@ interface ClaudeCliOptions {
   spawnFn?: SpawnFn;
   probeBinary?: VersionProbe;
   timeoutSec?: number;
+  clock?: Clock;
 }
 
 interface ClaudeCliResponse {
@@ -54,6 +56,7 @@ export class ClaudeCliAdapter implements ModelAdapter {
   private cachedSystem = "";
   private readonly spawnFn: SpawnFn;
   private readonly timeoutMs: number;
+  private readonly pricer: DispatchPricer;
 
   /**
    * Constructor verifies the `claude` binary is reachable rather than probing
@@ -65,6 +68,7 @@ export class ClaudeCliAdapter implements ModelAdapter {
     this.modelConfig = config;
     this.spawnFn = options.spawnFn ?? spawn;
     this.timeoutMs = (options.timeoutSec ?? DEFAULT_TIMEOUT_SEC) * 1000;
+    this.pricer = new DispatchPricer(config, options.clock);
 
     const probe =
       options.probeBinary ??
@@ -94,6 +98,13 @@ export class ClaudeCliAdapter implements ModelAdapter {
   async execute(packet: TaskPacket): Promise<ExecutionResult> {
     const { stableBlock, userPrompt } = splitStableFromDynamic(packet, this.cachedSystem);
     const prompt = stableBlock ? `${stableBlock}\n\n${userPrompt}` : userPrompt;
+
+    // The CLI reports its own cost; the list only decides whether the model may run.
+    const dispatchDate = this.pricer.now();
+    const price = this.pricer.price(dispatchDate);
+    if (price.unpriced) {
+      return refusedResult(this.modelConfig, dispatchDate, price.reason, packet.budget.maxOutputTokens);
+    }
 
     const started = Date.now();
     const run = await this.runClaudeCli(prompt);

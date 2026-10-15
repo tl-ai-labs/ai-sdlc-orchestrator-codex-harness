@@ -10,6 +10,7 @@ import type { AttemptRecord, ExecutionResult, ModelConfig, TaskPacket } from "..
 import { computeCostUsd, estimateTokens } from "../pricing.js";
 import type { ModelAdapter } from "./ModelAdapter.js";
 import { log } from "../log.js";
+import { DispatchPricer, priceFields, refusedResult, type Clock } from "./dispatchPricer.js";
 
 // Fallback when the policy YAML omits max_output_tokens_absolute. 32000 is
 // the current Opus 4.7 output ceiling.
@@ -22,16 +23,22 @@ export class BuiltinAnthropicAdapter implements ModelAdapter {
   readonly modelConfig: ModelConfig;
   private client: Anthropic;
   private cachedSystem = "";
+  private readonly pricer: DispatchPricer;
 
-  constructor(config: ModelConfig) {
+  constructor(config: ModelConfig, options: { client?: Anthropic; clock?: Clock } = {}) {
     this.id = config.id;
     this.modelConfig = config;
-    const envKey = config.auth?.env ?? "ANTHROPIC_API_KEY";
-    const apiKey = process.env[envKey];
-    if (!apiKey) {
-      throw new Error(`${envKey} not set for BuiltinAnthropicAdapter (model ${config.id})`);
+    this.pricer = new DispatchPricer(config, options.clock);
+    if (options.client) {
+      this.client = options.client;
+    } else {
+      const envKey = config.auth?.env ?? "ANTHROPIC_API_KEY";
+      const apiKey = process.env[envKey];
+      if (!apiKey) {
+        throw new Error(`${envKey} not set for BuiltinAnthropicAdapter (model ${config.id})`);
+      }
+      this.client = new Anthropic({ apiKey });
     }
-    this.client = new Anthropic({ apiKey });
   }
 
   setSystemCache(text: string) {
@@ -49,6 +56,11 @@ export class BuiltinAnthropicAdapter implements ModelAdapter {
 
     const attempts: AttemptRecord[] = [];
     let ceiling = Math.min(packet.budget.maxOutputTokens, absoluteCeiling);
+
+    const dispatchDate = this.pricer.now();
+    const price = this.pricer.price(dispatchDate);
+    if (price.unpriced) return refusedResult(this.modelConfig, dispatchDate, price.reason, ceiling);
+    const priceTags = priceFields(price);
 
     // Doubling loop; returns attempts[] so the caller can emit one telemetry
     // event per attempt with a shared task_id.
@@ -107,10 +119,11 @@ export class BuiltinAnthropicAdapter implements ModelAdapter {
           ceiling_used: ceiling,
           hit_output_cap: false,
           tokens: failTokens,
-          cost_usd: computeCostUsd(failTokens, this.modelConfig.pricing),
+          cost_usd: computeCostUsd(failTokens, price.pricing),
           latency_ms: Date.now() - attemptStart,
           success: false,
           error: vendorError,
+          ...priceTags,
         };
         attempts.push(attempt);
         // Not an output-cap; no reason to double.
@@ -137,9 +150,10 @@ export class BuiltinAnthropicAdapter implements ModelAdapter {
         stop_reason: stopReason,
         hit_output_cap: hitOutputCap,
         tokens: attemptTokens,
-        cost_usd: computeCostUsd(attemptTokens, this.modelConfig.pricing),
+        cost_usd: computeCostUsd(attemptTokens, price.pricing),
         latency_ms: Date.now() - attemptStart,
         success: !hitOutputCap,
+        ...priceTags,
       };
       attempts.push(attempt);
 

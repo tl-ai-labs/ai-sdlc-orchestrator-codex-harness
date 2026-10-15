@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "written_by": "plugin/scripts/write-manifest.mjs",
+  "written_at": "2026-10-13T10:44:31Z",
+  "status": "interrupted",
+  "run_id": "20261013-101500-feature-3fa2c1",
+  "pass": "20261013-101500-feature-3fa2c1",
+  "policy": "gpt-seat-plus-flash",
+  "policy_name": "gpt-seat-plus-flash",
+  "started_at": "2026-10-13T10:15:00Z",
+  "ended_at": "2026-10-13T10:44:30Z",
+  "duration_sec": 1770,
+  "total_cost_usd": 0.1608,
+  "totals": {
+    "dispatched_cost_usd": 0.1608,
+    "by_provenance": {
+      "vendor": 0.0073,
+      "estimated": 0,
+      "modeled": 0.1535,
+      "none": 0
+    },
+    "driver_cost_usd_modeled": 0.322,
+    "driver_turns_incomplete": 1
+  },
+  "gates": [
+    {
+      "gate": 0,
+      "decision": "auto-approved",
+      "ts": "2026-10-13T10:16:00Z"
+    }
+  ],
+  "driver": {
+    "codex_invocations": 2,
+    "driver_turns": 2,
+    "driver_turns_incomplete": 1,
+    "outcome": "interrupted",
+    "thread_ids": [
+      "019a0000-0000-7000-8000-00000000f00d"
+    ],
+    "pin": {
+      "model": "gpt-5.6-terra",
+      "effort": "high"
+    }
+  }
+}

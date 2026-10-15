@@ -18,7 +18,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 
 import { existsSync } from "node:fs";
 
-import { loadPolicy, loadPolicyFromPath, getModel } from "./policy.js";
+import { resolvePolicy, getModel, type ResolvedPolicy } from "./policy.js";
 import {
   pickModel,
   simulatePolicyCost,
@@ -26,16 +26,24 @@ import {
   validateSelectOverrides,
   unreachableModelIds,
 } from "./routing.js";
-import { assessModels, parseAuthMode, type AuthMode } from "./preflight.js";
+import { assessModels, assessPricing, parseAuthMode, type AuthMode } from "./preflight.js";
+import { effectivePricing, withEffectivePrices, type RateCard } from "./prices.js";
 import { appendEvent, normalizeDirectTierEvent } from "./telemetry.js";
+import { DispatchRecorder, type PlaceholderPricer } from "./dispatchRecorder.js";
+import { computeCostUsd } from "./pricing.js";
+import { priceFields } from "./adapters/dispatchPricer.js";
+import { assertUnderCostCap, CostCapExceededError, driverCapWarning, type RecordedSpend } from "./costCap.js";
 import { createAdapter } from "./adapters/index.js";
 import {
+  applyVertexSurcharge,
   defaultAdcPath,
+  dispatchEndpoint,
   selectGeminiBackend,
   resolveGcpProject,
   resolveGcpLocation,
 } from "./adapters/geminiTransports.js";
-import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides } from "./types.js";
+import type { ExecutionResult, TaskPacket, TelemetryEvent, Policy, SelectOverrides, ModelConfig } from "./types.js";
+import { isPhase, PHASES } from "./types.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
 
 /**
@@ -65,6 +73,10 @@ function validateTaskPacket(raw: unknown): TaskPacket {
       `See plugin/mcp/model-dispatch/src/types.ts for the schema (or plugin/skills/pipeline/SKILL.md for the required-fields table).`,
     );
   }
+  if (!isPhase(packet.phase)) {
+    log("warn", "packet.validate.fail", { packet_id: packet.id as string, missing_fields: "phase" });
+    throw new Error(unknownPhaseMessage("execute_with_model: TaskPacket.phase", packet.phase));
+  }
   if (!Array.isArray(packet.inputs)) {
     log("warn", "packet.validate.fail", { packet_id: packet.id as string, missing_fields: "inputs" });
     throw new Error(
@@ -81,12 +93,20 @@ function validateTaskPacket(raw: unknown): TaskPacket {
   return packet as unknown as TaskPacket;
 }
 
+function unknownPhaseMessage(field: string, value: unknown): string {
+  return (
+    `${field} '${String(value)}' is not a phase the bridge routes. Use one of: ${PHASES.join(", ")}. ` +
+    "The state-machine step names (execute_packets, test_run, ...) are not phase names."
+  );
+}
+
 const SERVER_NAME = "model-dispatch";
 const SERVER_VERSION = "0.1.0";
 
 // Runtime state: loaded policies cached by name, adapters cached by model id.
 const adapterCache = new Map<string, ReturnType<typeof createAdapter>>();
 let activePolicy: Policy | null = null;
+let activeResolution: ResolvedPolicy | null = null;
 let activePolicyKey = "";
 
 /** Slot choices, spelled `slot=option[,slot=option...]`. Property of the install. */
@@ -96,20 +116,22 @@ const LEGACY_SELECT_ENV = "SDLC_SELECT";
 let legacySelectWarned = false;
 
 function ensurePolicy(policyName?: string, projectRoot?: string, policyPath?: string): Policy {
-  const key = `${policyName ?? "opus-only"}|${projectRoot ?? ""}|${policyPath ?? ""}`;
+  const key = `${policyName ?? ""}|${projectRoot ?? ""}|${policyPath ?? ""}`;
   if (activePolicy && activePolicyKey === key) return activePolicy;
-  const policy = policyPath
-    ? loadPolicyFromPath(policyPath)
-    : loadPolicy({ policyName, projectRoot });
+  const resolved = resolvePolicy({ policyName, projectRoot, policyPath });
+  const policy = resolved.policy;
   // Every policy load goes through here, so a bad slot choice fails at load
   // rather than partway through a paid phase.
   validateSelectOverrides(policy, selectOverrides());
   activePolicy = policy;
+  activeResolution = resolved;
   activePolicyKey = key;
   log("info", "policy.load", {
     policy_name: policy.name,
-    resolved_path: policyPath,
-    source: policyPath ? "path" : "name",
+    resolved_path: resolved.path,
+    source: resolved.source,
+    requested: resolved.requestedName ?? undefined,
+    sha256: resolved.sha256,
     version: policy.version,
     model_count: policy.models.length,
     rule_count: policy.rules.length,
@@ -163,11 +185,12 @@ function preflightDispatch(policy: Policy, authMode: AuthMode) {
   // Losing options of `select:` slots are excluded: their prerequisites
   // (Python venv, worker script) are not this run's problem.
   const notSelected = unreachableModelIds(policy, selectOverrides());
-  const assessment = assessModels(
-    policy.models.filter((m) => !notSelected.has(m.id)),
-    authMode,
-    (modelId) => adapterFor(policy, modelId),
-  );
+  const reachable = policy.models.filter((m) => !notSelected.has(m.id));
+  const assessment = assessModels(reachable, authMode, (modelId) => adapterFor(policy, modelId));
+  const pricing = assessPricing(reachable, new Date());
+  for (const u of pricing.unpriced) {
+    log("warn", "preflight.unpriced", { model_id: u.id, model_name: u.model_name, message: u.reason });
+  }
 
   // Resolved Gemini configuration — the project and region the run will bill.
   const adcPath = defaultAdcPath();
@@ -206,9 +229,11 @@ function preflightDispatch(policy: Policy, authMode: AuthMode) {
   for (const id of notSelected) {
     log("info", "preflight.model", { model_id: id, ok: true, classification: "not_selected" });
   }
+  const ok = assessment.ok && pricing.ok;
+  const haltReason = [assessment.halt_reason, pricing.halt_reason].filter(Boolean).join(" ") || null;
   log("info", "preflight.result", {
-    ok: assessment.ok,
-    halt_reason: assessment.halt_reason,
+    ok,
+    halt_reason: haltReason,
     warnings_n: assessment.warnings.length,
     backend: (gemini as any).backend,
     project: (gemini as any).project,
@@ -216,19 +241,65 @@ function preflightDispatch(policy: Policy, authMode: AuthMode) {
   });
 
   return {
-    ok: assessment.ok,
+    ok,
     auth_mode: authMode,
-    policy: { name: policy.name, version: policy.version },
+    policy: {
+      name: policy.name,
+      version: policy.version,
+      source: activeResolution?.source,
+      path: activeResolution?.path,
+    },
     models: assessment.models,
+    priced_on: pricing.priced_on,
+    unpriced: pricing.unpriced,
+    price_warnings: pricing.price_warnings,
     // Named so "you did not select it" stays distinguishable from
     // "pre-flight forgot about it".
     not_selected: [...notSelected],
     gemini,
-    halt_reason: assessment.halt_reason,
+    halt_reason: haltReason,
     // Failures on models this run will not dispatch to — informational,
     // never blocking.
     warnings: assessment.warnings,
   };
+}
+
+/** The Vertex regional surcharge, per leaf, for the endpoint this environment dispatches to. */
+function endpointRates(): (model: ModelConfig, rates: RateCard) => RateCard {
+  const adcFileExists = existsSync(defaultAdcPath());
+  const endpoints = new Map<string, ReturnType<typeof dispatchEndpoint>>();
+  return (model, rates) => {
+    if (!endpoints.has(model.id)) endpoints.set(model.id, dispatchEndpoint(model, process.env, adcFileExists));
+    const endpoint = endpoints.get(model.id);
+    return endpoint ? applyVertexSurcharge(rates, { ...endpoint, modelName: model.model_name }) : rates;
+  };
+}
+
+/** The abandoned attempt's prompt estimate, at the dated price and endpoint it would have billed. */
+function placeholderPricer(model: ModelConfig): PlaceholderPricer {
+  return (inputTokens) => {
+    const priced = effectivePricing(model, new Date(), { requestInputTokens: inputTokens, estimated: true });
+    if (priced.unpriced) return { cost_usd: 0 };
+    const card = endpointRates()(model, priced.pricing);
+    return { cost_usd: computeCostUsd({ input: inputTokens, input_cached: 0, output: 0 }, card), ...priceFields(priced) };
+  };
+}
+
+// Dispatches still running. The client can stop waiting (a cancelled call,
+// stdin closed by dispatch.mjs, then SIGTERM two seconds later), and each of
+// these records what it can and stops its adapter before the process goes.
+const inFlight = new Set<(reason: string) => void>();
+
+function abandonInFlight(reason: string): void {
+  for (const abandon of [...inFlight]) abandon(reason);
+}
+
+process.stdin.once("end", () => abandonInFlight("the client closed the connection"));
+for (const [signal, signo] of [["SIGTERM", 15], ["SIGINT", 2], ["SIGHUP", 1]] as const) {
+  process.once(signal, () => {
+    abandonInFlight(`the server received ${signal}`);
+    process.exit(128 + signo);
+  });
 }
 
 const server = new Server(
@@ -274,12 +345,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "simulate_policy",
       description:
-        "What-if: given a list of telemetry events from a real run, recompute total cost under a different policy. No LLM calls.",
+        "What-if: given a list of telemetry events from a real run, recompute total cost under a different policy. No LLM calls. " +
+        "Each event is priced from the dated price list on the UTC day of its `ts` (today when absent), at the endpoint this " +
+        "environment dispatches to; events nothing prices are listed in `unpriced` and left out of the total.",
       inputSchema: {
         type: "object",
         properties: {
           events: { type: "array" },
           policy_name: { type: "string" },
+          project_root: { type: "string" },
           policy_path: { type: "string" },
         },
         required: ["events"],
@@ -287,10 +361,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "log_telemetry",
-      description: "Append a telemetry event to the pass JSONL log.",
+      description:
+        "Append a telemetry event to the pass JSONL log. Given policy_name, policy_path or project_root, the event's " +
+        "routing names the policy those resolve to, the one execute_with_model would route by.",
       inputSchema: {
         type: "object",
-        properties: { telemetry_path: { type: "string" }, event: { type: "object" } },
+        properties: {
+          telemetry_path: { type: "string" },
+          event: { type: "object" },
+          policy_name: { type: "string" },
+          project_root: { type: "string" },
+          policy_path: { type: "string" },
+        },
         required: ["telemetry_path", "event"],
       },
     },
@@ -342,7 +424,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const { name, arguments: args } = req.params;
   const a0 = args as any;
 
@@ -389,6 +471,28 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           select_overridden: decision.selection?.overridden,
         });
 
+        const warnDriver = (spend: RecordedSpend | null | undefined) => {
+          const w = spend ? driverCapWarning(spend) : null;
+          if (w) log("warn", w.event, { packet_id: packet.id, reason: w.reason });
+        };
+        try {
+          warnDriver(assertUnderCostCap(policy, a.telemetry_path, { env: process.env }));
+        } catch (err) {
+          if (err instanceof CostCapExceededError) {
+            warnDriver(err.spend);
+            log("warn", "cost_cap.refused", {
+              packet_id: packet.id,
+              recorded_usd: err.recordedUsd,
+              dispatched_usd: err.dispatchedUsd,
+              driver_usd: err.driverUsd,
+              driver_source: err.driverSource,
+              cap_usd: err.capUsd,
+              policy_name: err.policyName,
+            });
+          }
+          throw err;
+        }
+
         const adapter = adapterFor(policy, decision.modelId);
         const dispatchStarted = Date.now();
         log("info", "dispatch.start", {
@@ -399,12 +503,56 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           cache_context: a.cache_context,
           work_dir: a.work_dir ?? a.project_root,
         });
-        // Passed on every dispatch; completion adapters ignore it.
-        const result = await adapter.execute(packet, a.cache_context, {
-          project_root: a.project_root,
-          work_dir: a.work_dir ?? a.project_root,
-          telemetry_path: a.telemetry_path,
-        });
+        if (!a.telemetry_path) {
+          // Not refused: a hand-run MCP call may have no run. Its spend reaches no report and no cost cap.
+          log("warn", "telemetry.missing", { packet_id: packet.id, model_id: decision.modelId });
+        }
+        const model = getModel(policy, decision.modelId);
+        const recorder = new DispatchRecorder(
+          {
+            packet,
+            decision,
+            policy,
+            modelName: model.model_name,
+            adapterProvenance: adapter.costProvenance,
+          },
+          a.telemetry_path,
+          dispatchStarted,
+          placeholderPricer(model),
+        );
+        const stop = new AbortController();
+        const abandon = (reason: string) => {
+          inFlight.delete(abandon);
+          const ev = recorder.abandon(reason);
+          if (ev) {
+            log("warn", "dispatch.abandoned", {
+              packet_id: packet.id,
+              model_id: decision.modelId,
+              reason,
+              attempt_number: ev.attempt_number,
+              booked_usd: ev.cost_usd,
+            });
+          }
+          stop.abort();
+        };
+        const onCancel = () => abandon("the client cancelled the call");
+        inFlight.add(abandon);
+        extra.signal.addEventListener("abort", onCancel, { once: true });
+
+        let result: ExecutionResult;
+        try {
+          // Passed on every dispatch; completion adapters ignore the paths.
+          result = await adapter.execute(packet, a.cache_context, {
+            project_root: a.project_root,
+            work_dir: a.work_dir ?? a.project_root,
+            telemetry_path: a.telemetry_path,
+            onAttempt: (att) => recorder.record(att),
+            signal: stop.signal,
+          });
+        } finally {
+          inFlight.delete(abandon);
+          extra.signal.removeEventListener("abort", onCancel);
+        }
         for (const att of result.attempts ?? []) {
           log("debug", "dispatch.attempt", {
             packet_id: packet.id,
@@ -436,74 +584,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           });
         }
 
-        // One TelemetryEvent per attempt, all sharing the packet's task_id.
-        const attempts = result.attempts ?? [
-          {
-            attempt_number: 1,
-            ceiling_used: packet.budget.maxOutputTokens,
-            hit_output_cap: false,
-            tokens: result.tokens,
-            cost_usd: result.cost_usd,
-            latency_ms: result.latency_ms,
-            success: result.success,
-            error: result.error,
-          },
-        ];
-        const modelName = getModel(policy, decision.modelId).model_name;
-        const baseEvent = {
-          ts: new Date().toISOString(),
-          pass: packet.pass_id,
-          phase: packet.phase,
-          task_type: packet.task_type,
-          task_id: packet.id,
-          module: packet.module,
-          model: modelName,
-          // Read from the adapter rather than assumed: most report real
-          // vendor-metered usage, but the codex-cli path can only derive
-          // cost from token counts (the CLI reports no money), and saying
-          // "vendor" over a calculation is the one thing the provenance
-          // field exists to prevent.
-          // The result's own label wins where it set one: an adapter that
-          // normally meters can still have had to estimate this particular
-          // call (no `usage` block came back, or it priced a failure from
-          // estimateTokens). Falling straight through to the adapter's static
-          // declaration would stamp those `vendor`.
-          provenance: result.cost_provenance ?? adapter.costProvenance ?? ("vendor" as const),
-          routed_by: "orchestrator" as const,
-          // Leaf id; the only field that distinguishes two leaves that share
-          // a vendor model name (e.g. flash-completion vs flash-agsdk-worker).
-          model_id: decision.modelId,
-          routing: {
-            policy_name: policy.name,
-            policy_version: policy.version,
-            rule_index: decision.ruleIndex,
-            rule_reason: decision.reason,
-            // Undefined unless the rule went through a slot; JSON.stringify
-            // drops undefined keys, so unslotted policies produce identical
-            // events to before slots existed.
-            select: decision.selection,
-          },
-          retry_count: packet.retry_count ?? 0,
-        };
-        const events: TelemetryEvent[] = attempts.map((att) => ({
-          ...baseEvent,
-          input_tokens: att.tokens.input,
-          input_tokens_cached: att.tokens.input_cached,
-          output_tokens: att.tokens.output,
-          // Already counted in output_tokens and billed at the output rate;
-          // surfaced only so a reader can see how much of a delegation's
-          // output was thinking. Undefined on adapters that don't report it.
-          output_tokens_reasoning: att.tokens.output_reasoning,
-          cost_usd: att.cost_usd,
-          latency_ms: att.latency_ms,
-          success: att.success,
-          attempt_number: att.attempt_number,
-          ceiling_used: att.ceiling_used,
-          retry_reason: att.attempt_number > 1 ? "output_cap" : undefined,
-          error: att.error,
-        }));
+        recorder.finish(result);
+        const events = recorder.events;
         if (a.telemetry_path) {
-          for (const ev of events) appendEvent(a.telemetry_path, ev);
           log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: events.length });
         }
         return {
@@ -521,16 +604,23 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       case "simulate_policy": {
         const a = args as any;
-        const policy = ensurePolicy(a.policy_name, undefined, a.policy_path);
-        // Replay against the same slot choices the real run uses.
-        const out = simulatePolicyCost(a.events, policy, selectOverrides());
+        const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
+        // Replay against the same slot choices the real run uses, at the
+        // endpoints this environment would dispatch to.
+        const out = simulatePolicyCost(a.events, policy, selectOverrides(), { billedRates: endpointRates() });
         return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
       }
       case "log_telemetry": {
         const a = args as any;
+        if (!isPhase(a.event?.phase)) throw new Error(unknownPhaseMessage("log_telemetry: event.phase", a.event?.phase));
         // Direct-tier caller is a model with no clock — normalize overwrites
         // its `ts` and nulls `latency_ms`.
-        appendEvent(a.telemetry_path, normalizeDirectTierEvent(a.event as TelemetryEvent));
+        let event = normalizeDirectTierEvent(a.event as TelemetryEvent);
+        if (a.policy_name !== undefined || a.policy_path !== undefined || a.project_root !== undefined) {
+          const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
+          event = { ...event, routing: { ...event.routing, policy_name: policy.name, policy_version: policy.version } };
+        }
+        appendEvent(a.telemetry_path, event);
         log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: 1 });
         return { content: [{ type: "text", text: "ok" }] };
       }
@@ -545,7 +635,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case "load_policy": {
         const a = args as any;
         const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
-        return { content: [{ type: "text", text: JSON.stringify(policy, null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(withEffectivePrices(policy, new Date()), null, 2) }] };
       }
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };

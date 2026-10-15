@@ -14,7 +14,7 @@ import {
   requiresServerDispatch,
 } from "../dist/preflight.js";
 
-/** The two models of the shipped opus-plus-flash policy, in policy-file order. */
+/** The two models of the Claude harness's opus-plus-flash policy (a test fixture), in policy-file order. */
 const MODELS = [
   { id: "opus", model_name: "claude-opus-4-7", adapter: "builtin-anthropic" },
   { id: "gemini-flash", model_name: "gemini-3.5-flash", adapter: "mcp:model-dispatch" },

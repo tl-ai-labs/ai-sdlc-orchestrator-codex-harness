@@ -2,7 +2,7 @@
  * Telemetry — append-only JSONL writer + rollup builder for manifest.json.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { TelemetryEvent } from "./types.js";
 
@@ -207,9 +207,4 @@ function emptyManifest(pass: string, policy_name: string, ts: string): Manifest 
     module_breakdown: {},
     task_type_breakdown: {},
   };
-}
-
-export function writeManifest(path: string, manifest: Manifest): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(manifest, null, 2), "utf-8");
 }

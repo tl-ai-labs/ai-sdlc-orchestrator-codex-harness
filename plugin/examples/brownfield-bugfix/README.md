@@ -19,12 +19,18 @@ but doesn't.
 
 ## Try it
 
+A brownfield run works on the git repository that holds the folder it starts in, so copy this
+folder out of the harness and make it a repository of its own first. Then start codex there as
+[docs/tutorial-first-run.md](../../../docs/tutorial-first-run.md) shows.
+
 ```bash
-cd plugin/examples/brownfield-bugfix
+cp -R plugin/examples/brownfield-bugfix ~/brownfield-bugfix && cd ~/brownfield-bugfix
+printf 'node_modules/\n.sdlc/\n' > .gitignore
+git init -q && git add -A && git commit -qm 'fixture'
 npm install
 npm test    # 1 failing test: "returns 400 when password missing"
 
-# In Claude Code:
+# In a codex session started in this folder:
 $mmo-codex:brownfield
 # Pick intent: bugfix
 # The pipeline runs reproduce (already reproduced!) → diagnose → fix → regression test

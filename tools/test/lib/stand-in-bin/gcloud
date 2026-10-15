@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stand-in for gcloud in the root tests: a real one would contact Google. Every call fails the way it does on a
+# machine with no network.
+echo "ERROR: (gcloud) Could not resolve host: oauth2.googleapis.com (stand-in for tests: no network)" >&2
+exit 1

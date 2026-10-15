@@ -25,6 +25,8 @@
  * masked preview, never the raw match.
  */
 
+import { isMain } from "./lib/is-main.mjs";
+
 // ─── patterns ─────────────────────────────────────────────────────────
 // Each entry: { name, kind, re }. `re` MUST have the /g flag so scan()
 // can iterate all matches. Groups may be present but scan() ignores them.
@@ -246,7 +248,7 @@ async function cli(argv) {
 }
 
 // Detect direct CLI invocation vs library import.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url, process.argv[1])) {
   cli(process.argv).catch((e) => {
     console.error(`dispatch-sanitize CLI error: ${e?.message ?? e}`);
     process.exit(2);

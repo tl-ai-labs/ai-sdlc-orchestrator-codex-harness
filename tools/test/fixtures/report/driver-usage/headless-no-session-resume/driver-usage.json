@@ -1,0 +1,283 @@
+{
+  "schema_version": 1,
+  "route": "headless",
+  "source": "exec-stream",
+  "cost_source": "exec stream (no readable session file for the thread; unverified; upper bound: includes the resumed session's earlier turns)",
+  "verified": false,
+  "provenance": "modeled",
+  "thread_ids": [
+    "019a0000-0000-7000-8000-0000000000a1"
+  ],
+  "threads": [
+    {
+      "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+      "rollout": "missing",
+      "rollout_file": null,
+      "reason": null,
+      "booked_from": "exec-stream",
+      "usage_series": null,
+      "originator": null,
+      "source": null,
+      "cli_version": null,
+      "plan_type": null,
+      "window": {
+        "start": "2026-10-13T10:00:02.045Z",
+        "end": "2026-10-13T10:00:03.155Z",
+        "start_anchor": "invocation_start",
+        "end_anchor": "invocation_end",
+        "exact": true,
+        "lower_bound": false,
+        "provisional": false
+      }
+    }
+  ],
+  "window": {
+    "start": "2026-10-13T10:00:02.045Z",
+    "end": "2026-10-13T10:00:03.155Z",
+    "start_anchor": "invocation_start",
+    "end_anchor": "invocation_end",
+    "exact": true,
+    "lower_bound": false,
+    "provisional": false
+  },
+  "pin": {
+    "model": "gpt-5.6-terra",
+    "effort": "high"
+  },
+  "policy": {
+    "name": "gpt-plus-flash",
+    "version": 1
+  },
+  "turns": [
+    {
+      "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+      "turn_id": "invocation-1",
+      "invocation": 1,
+      "usage_source": "exec-stream",
+      "model": "gpt-5.6-terra",
+      "effort": "high",
+      "started_at": "2026-10-13T10:00:02.045Z",
+      "ended_at": "2026-10-13T10:00:02.105Z",
+      "ended_by": null,
+      "requests": 0,
+      "compaction_requests": 0,
+      "web_search_calls": 0,
+      "tokens": {
+        "input_tokens": 100000,
+        "cached_input_tokens": 80000,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 5000,
+        "reasoning_output_tokens": 0
+      },
+      "cost_usd": 0.116,
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
+    },
+    {
+      "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+      "turn_id": "invocation-2",
+      "invocation": 2,
+      "usage_source": "exec-stream",
+      "model": "gpt-5.6-terra",
+      "effort": "high",
+      "started_at": "2026-10-13T10:00:03.095Z",
+      "ended_at": "2026-10-13T10:00:03.155Z",
+      "ended_by": null,
+      "requests": 0,
+      "compaction_requests": 0,
+      "web_search_calls": 0,
+      "tokens": {
+        "input_tokens": 10000,
+        "cached_input_tokens": 5000,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 500,
+        "reasoning_output_tokens": 0
+      },
+      "cost_usd": 0.017,
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
+    }
+  ],
+  "tokens": {
+    "input_tokens": 110000,
+    "cached_input_tokens": 85000,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 5500,
+    "reasoning_output_tokens": 0,
+    "requests": 0,
+    "compaction_requests": 0,
+    "web_search_calls": 0
+  },
+  "cost_usd_modeled": 0.133,
+  "cost_complete": false,
+  "unpriced": [],
+  "cross_check": {
+    "verdict": "no_session_file",
+    "verified": false,
+    "mapping": "invocation_window",
+    "threads": [
+      {
+        "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+        "verdict": "no_session_file",
+        "exec_stream_baseline": "unknown",
+        "session_tokens": null,
+        "exec_stream_tokens": {
+          "input_tokens": 110000,
+          "cached_input_tokens": 85000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5500,
+          "reasoning_output_tokens": 0
+        },
+        "difference": null,
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "incomplete_turns": 0,
+        "incomplete_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "unreported_invocations": 0,
+        "token_count_reset": false,
+        "gap": null
+      }
+    ],
+    "invocations": [
+      {
+        "invocation": 1,
+        "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+        "turn_id": null,
+        "status": "no_session_file",
+        "exec_cumulative": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 0
+        },
+        "session_total": null,
+        "exec_delta": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 0
+        },
+        "session_turn_tokens": null,
+        "difference": null,
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "carried_invocations": [],
+        "carried_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        }
+      },
+      {
+        "invocation": 2,
+        "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+        "turn_id": null,
+        "status": "no_session_file",
+        "exec_cumulative": {
+          "input_tokens": 110000,
+          "cached_input_tokens": 85000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5500,
+          "reasoning_output_tokens": 0
+        },
+        "session_total": null,
+        "exec_delta": {
+          "input_tokens": 10000,
+          "cached_input_tokens": 5000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 500,
+          "reasoning_output_tokens": 0
+        },
+        "session_turn_tokens": null,
+        "difference": null,
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "carried_invocations": [],
+        "carried_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        }
+      }
+    ],
+    "session_tokens": {
+      "input_tokens": 0,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_output_tokens": 0
+    },
+    "exec_stream_tokens": {
+      "input_tokens": 110000,
+      "cached_input_tokens": 85000,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 5500,
+      "reasoning_output_tokens": 0
+    },
+    "exec_stream_baseline": {
+      "019a0000-0000-7000-8000-0000000000a1": "unknown"
+    },
+    "exec_stream_cost_usd": 0.133,
+    "compaction_requests": 0,
+    "compaction_tokens": {
+      "input_tokens": 0,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_output_tokens": 0
+    },
+    "incomplete_invocations": 0,
+    "incomplete_turns": 0,
+    "incomplete_tokens": {
+      "input_tokens": 0,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_output_tokens": 0
+    },
+    "unreported_invocations": 0,
+    "missing_invocations": 0,
+    "token_count_reset": false,
+    "gap": null,
+    "missing_threads": [
+      "019a0000-0000-7000-8000-0000000000a1"
+    ],
+    "unchecked_threads": []
+  },
+  "excluded_threads": [],
+  "tier_unverified_turns": 0,
+  "price_list_verified": "2026-10-13",
+  "collected_at": "2026-10-13T11:00:00.000Z"
+}

@@ -6,6 +6,7 @@ import { AntigravityWorkerAdapter } from "./AntigravityWorkerAdapter.js";
 import { ClaudeCliAdapter } from "./ClaudeCliAdapter.js";
 import { OpenAIAdapter } from "./OpenAIAdapter.js";
 import { CodexCliAdapter } from "./CodexCliAdapter.js";
+import { KNOWN_ADAPTER_IDS, type AdapterId } from "./ids.js";
 import { log } from "../log.js";
 
 /**
@@ -29,22 +30,31 @@ import { log } from "../log.js";
 const LEGACY_GEMINI_ADAPTER_ID = "mcp:gemini-flash-server";
 let legacyAdapterIdWarned = false;
 
-export function createAdapter(config: ModelConfig): ModelAdapter {
-  if (config.adapter === "builtin-anthropic") return new BuiltinAnthropicAdapter(config);
-  if (config.adapter === "claude-cli") return new ClaudeCliAdapter(config);
-  if (config.adapter === "openai") return new OpenAIAdapter(config);
-  if (config.adapter === "codex-cli") return new CodexCliAdapter(config);
-  if (config.adapter === "mcp:model-dispatch") return new GeminiFlashAdapter(config);
-  if (config.adapter === LEGACY_GEMINI_ADAPTER_ID) {
+// Typed against AdapterId, so tsc rejects an id in ids.ts with no factory here.
+const ADAPTER_FACTORIES: Record<AdapterId, (config: ModelConfig) => ModelAdapter> = {
+  "builtin-anthropic": (c) => new BuiltinAnthropicAdapter(c),
+  "claude-cli": (c) => new ClaudeCliAdapter(c),
+  openai: (c) => new OpenAIAdapter(c),
+  "codex-cli": (c) => new CodexCliAdapter(c),
+  "mcp:model-dispatch": (c) => new GeminiFlashAdapter(c),
+  [LEGACY_GEMINI_ADAPTER_ID]: (c) => {
     if (!legacyAdapterIdWarned) {
       legacyAdapterIdWarned = true;
       log("warn", "policy.adapter.deprecated", { adapter_id_seen: LEGACY_GEMINI_ADAPTER_ID, canonical: "mcp:model-dispatch" });
     }
-    return new GeminiFlashAdapter(config);
+    return new GeminiFlashAdapter(c);
+  },
+  "antigravity-worker": (c) => new AntigravityWorkerAdapter(c),
+};
+
+export const REGISTERED_ADAPTER_IDS: readonly string[] = Object.keys(ADAPTER_FACTORIES);
+
+export function createAdapter(config: ModelConfig): ModelAdapter {
+  if (KNOWN_ADAPTER_IDS.has(config.adapter)) {
+    return ADAPTER_FACTORIES[config.adapter as AdapterId](config);
   }
-  if (config.adapter === "antigravity-worker") return new AntigravityWorkerAdapter(config);
   throw new Error(
-    `No adapter registered for '${config.adapter}'. Implement one and register it in adapters/index.ts.`,
+    `No adapter registered for '${config.adapter}'. Known adapters: ${REGISTERED_ADAPTER_IDS.join(", ")}.`,
   );
 }
 

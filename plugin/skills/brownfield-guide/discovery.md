@@ -2,8 +2,8 @@
 
 **How this file is used.** Unlike the role files under `pipeline/roles/`, this is not a packet
 instruction. Discovery is cheap local reading, so the conductor performs it directly with its own
-shell and file access — no dispatch, no model spend. `SKILL.md` sends you here at step 2 (discovery
-smoke) and step 3 (the real read).
+shell and file access — no dispatch, no model spend. The brownfield guide sends you here at step 2
+(discovery smoke) and step 3 (the real read).
 
 Your job: read the repository, understand it well enough for downstream phases to work safely, and
 write two files — a human-readable `discovery.md` and a machine-readable `baseline.json`. **Never
@@ -345,7 +345,7 @@ On an `incremental` refresh, merge the delta into `current.json` in place. The p
 ```json
 {
   "schema_version": 1,
-  "plugin_version": "<from plugin/.codex-plugin/plugin.json>",
+  "plugin_version": "<from {{PLUGIN_ROOT}}/.codex-plugin/plugin.json>",
   "built_at": "<ISO-8601>",
   "run_id": "<caller-supplied>",
 
@@ -432,7 +432,7 @@ On an `incremental` refresh, merge the delta into `current.json` in place. The p
 **Trigger on any of:**
 
 1. Group 3 detected a stack with no matching pre-authored adapter in
-   `plugin/skills/pipeline/stacks/`. The shipped set is `generic.md`, `nest.md`, `python.md` — so a
+   `{{PLUGIN_ROOT}}/skills/pipeline/stacks/`. The shipped set is `generic.md`, `nest.md`, `python.md` — so a
    repo whose primary stack is React/Next.js, Go, Rails, Java, Rust, and so on triggers this.
 2. A root `AGENTS.md` or `CLAUDE.md` declares a custom framework — grep for `custom framework`,
    `internal framework`, `bespoke framework`, `in-house framework`, or a `## Framework:` heading

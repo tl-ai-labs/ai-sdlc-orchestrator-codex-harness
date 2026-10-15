@@ -155,9 +155,10 @@ Python apps typically use one of:
 
 Discovery recorded which via `baseline.env_keys_referenced_in_code`. When a codegen packet
 introduces a new required env var:
-1. Append to `.env.example` if present
-2. **Never** modify `.env`
-3. If `pydantic-settings` is used, add the field to the Settings class (via `existing_file_edit`
+1. **Never** write `.env`, `.env.example` or any other `.env*` file — the write hook refuses every
+   one of them while the run's contract is live. Name the new key in the packet's result, so
+   Phase 7's env mini-gate (pipeline SKILL.md) lists it for the user to add
+2. If `pydantic-settings` is used, add the field to the Settings class (via `existing_file_edit`
    on the settings module) — that's a code change, not just an env change
 
 ### Test-runner

@@ -15,10 +15,16 @@ src/
 
 ## Try it
 
+A brownfield run works on the git repository that holds the folder it starts in, so copy this
+folder out of the harness and make it a repository of its own first. Then start codex there as
+[docs/tutorial-first-run.md](../../../docs/tutorial-first-run.md) shows.
+
 ```bash
-cd plugin/examples/brownfield-feature-extend
+cp -R plugin/examples/brownfield-feature-extend ~/brownfield-feature-extend && cd ~/brownfield-feature-extend
+printf 'node_modules/\n.sdlc/\n' > .gitignore
+git init -q && git add -A && git commit -qm 'fixture'
 npm install && npm test
-# In Claude Code:
+# In a codex session started in this folder:
 $mmo-codex:brownfield
 # Pick intent: feature-extend
 ```

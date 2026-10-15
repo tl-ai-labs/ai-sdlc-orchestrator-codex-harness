@@ -46,6 +46,7 @@ import { spawnSync } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
+import { isMain } from "./lib/is-main.mjs";
 
 /** The name tools/setup.mjs registers the bridge under. */
 export const MCP_SERVER_NAME = "model-dispatch";
@@ -257,7 +258,7 @@ async function main() {
 // Only run when invoked directly — the exports above are unit-tested.
 // fileURLToPath, not `new URL(...).pathname`: the latter is not URL-decoded,
 // so a path containing a space arrives as %20 and never matches.
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+if (isMain(import.meta.url, process.argv[1])) {
   main().catch((e) => {
     console.error(`uninstall-cleanup: ${e?.message ?? e}`);
     process.exit(1);

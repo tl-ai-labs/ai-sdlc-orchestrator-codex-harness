@@ -10,7 +10,7 @@ Learn by doing. Follow along top to bottom, no prior knowledge assumed.
 
 | Doc | For |
 |---|---|
-| [Your first run](tutorial-first-run.md) | Ten minutes from a fresh install to a completed greenfield pass with real telemetry and a cost report. |
+| [Your first run](tutorial-first-run.md) | A greenfield run and a brownfield run in a codex session: install, setup, each gate, and where the run folder, the cost report and the guard log are. |
 
 ## How-to guides
 
@@ -19,7 +19,8 @@ Direct, imperative. Each guide gets a specific job done.
 | Doc | For |
 |---|---|
 | [Install & credentials](../SETUP.md) | Setting up a fresh install: prerequisites, both install routes, the GPT and Gemini credentials, the per-project policy pick. |
-| [Run a pass](running.md) | Every flag on the driver explained — greenfield and brownfield, interactive and headless. |
+| [Run a pass](running.md) | Both routes, the policies, the gates, every `run.mjs` flag, and what lands in the run folder. |
+| [Check the cost with a headless run](headless-runs.md) | A headless run from a clone on an API-key policy, the token cross-check against codex's own count, and the OpenAI usage dashboard check. |
 | [Bring your own brief](brief-template.md) | Writing a project brief in the section layout the requirements phase expects. |
 
 ## Reference
@@ -40,7 +41,7 @@ Reasoning-forward. Understand why the pieces are shaped the way they are.
 | Doc | For |
 |---|---|
 | [Architecture](architecture.md) | Who calls what, and why the driver calls the bridge rather than the model. Adapters, routing, the write contract, telemetry, install routes. |
-| [Methodology](methodology.md) | How tokens and costs are derived; why modeled and metered figures are reported separately and never summed. |
+| [Methodology](methodology.md) | How tokens and costs are derived; why modeled figures stay out of the vendor-metered total. |
 
 ## For maintainers
 

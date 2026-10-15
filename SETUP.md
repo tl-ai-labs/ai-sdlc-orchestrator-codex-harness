@@ -27,9 +27,9 @@ the manual route, or to work inside a clone.
 
 Install or upgrade codex with `npm install -g @openai/codex`.
 
-If `codex login status` says you are not logged in, run `codex login` (ChatGPT seat) or export
-`OPENAI_API_KEY`, which the CLI also accepts. The harness never reads `~/.codex/auth.json`
-itself and never prints its contents.
+If `codex login status` says you are not logged in, run `codex login` (ChatGPT seat), or sign
+in with an API key: `printenv OPENAI_API_KEY | codex login --with-api-key`. The harness never
+reads `~/.codex/auth.json` itself and never prints its contents.
 
 ## 2. Choose a route
 
@@ -54,9 +54,18 @@ Confirm with `codex plugin list --json`; then `$mmo-codex:greenfield` and the re
 from any directory. Installed this way you can **skip step 6** — codex loads a plugin's skills
 directly, so nothing needs linking.
 
+**Trust the write hook once, for brownfield runs.** The plugin ships a write hook that holds a
+brownfield run to the scope confirmed at its Gate 0, and Codex runs a plugin hook only once it is
+trusted. The next time Codex starts it asks about the new hook: "Trust all and continue" trusts
+it, and so does `/hooks` inside a session. Until then every brownfield run in a session stops
+right after Gate 0 with "The write guard did not run in this session". A plugin update that
+changes the hook's entry drops that trust, and the same step restores it.
+
 You still need the credentials in step 4 and a policy in step 5, and the bundled server has to be
-built once: run `node plugin/codex/verify-setup.mjs --fix` from the clone the marketplace points
-at (the install references that directory rather than copying the built server).
+built once. Either install copies the plugin into `~/.codex/plugins/cache/`, and a session runs
+that copy: for a local path, run `node plugin/codex/verify-setup.mjs --fix` in the clone before
+`codex plugin add` so the copy carries the build, and run `codex plugin add` again after every
+pull. For the GitHub route, run the copy's own `codex/verify-setup.mjs --fix`.
 
 **Work inside a clone** (contributors, or anyone changing the harness itself). Continue below.
 
@@ -88,6 +97,7 @@ which one you pick decides whether you need a key at all.
 | Policy (see §5) | Judgment tier reaches GPT via | `OPENAI_API_KEY` |
 |---|---|---|
 | `gpt-plus-flash` (default) | the OpenAI API, metered per call | **required** — runs halt at preflight without it |
+| `gpt-plus-flash-38` | the OpenAI API, metered per call | **required** — runs halt at preflight without it |
 | `gpt-seat-plus-flash` | a local `codex exec` on your ChatGPT seat | not used at all |
 
 On the metered path, export the key:
@@ -136,20 +146,25 @@ node plugin/scripts/setup-policy.mjs --policy=gpt-plus-flash
 
 | Policy | Judgment tier | Mechanical tier | Cost reporting |
 |---|---|---|---|
-| `gpt-plus-flash` | GPT via the OpenAI API | Gemini Flash | Vendor-metered throughout — the policy of record |
+| `gpt-plus-flash` | GPT via the OpenAI API | Gemini Flash | Every dispatch vendor-metered; the conductor's line modeled — the policy of record |
+| `gpt-plus-flash-38` | GPT via the OpenAI API | Gemini 3.8 Flash | Every dispatch vendor-metered; the conductor's line modeled |
 | `gpt-seat-plus-flash` | GPT via your local `codex exec` (ChatGPT seat) | Gemini Flash | Judgment cost is **modeled**, not metered |
-| `flash-agsdk-only` | — | Gemini Flash via the agent worker | Mechanical only |
+| `flash-agsdk-only` | Gemini Flash via the agent worker | Gemini Flash via the agent worker | Every dispatch on the agent door; the conductor still runs on the GPT pin |
 
 `gpt-plus-flash` is the default and the one every published cost figure comes from.
 
+`gpt-plus-flash-38` is `gpt-plus-flash` with the mechanical tier on `gemini-3.8-flash`. Google
+deprecated `gemini-3.7-flash` on 2026-10-08 and serves requests for it from 3.8, so this policy
+records the model that actually runs. The rates are the same.
+
 `gpt-seat-plus-flash` bills judgment work against your ChatGPT seat instead of an API key. Codex
 reports token counts but no money, so cost for that tier is derived from tokens and labelled
-`modeled`. Reports keep modeled figures separate from metered ones and never sum the two.
-
-The `opus-*` files under `plugin/config/policies/` are replay fixtures, not selectable policies.
+`modeled`. The report keeps modeled figures out of the vendor-metered total and shows them as a
+modeled total of their own; only `Run total = dispatched + driver` adds the two.
 
 Store the choice as the project default, or pass `--policy=<name>` per run to override it
-without changing the default.
+without changing the default. A `routing-policy.yaml` at the project root beats both. See
+[docs/running.md](docs/running.md#which-policy-a-run-uses).
 
 ## 6. Make the skills invokable (clone route only)
 
@@ -189,33 +204,45 @@ Blocking problems make the harness unusable and exit non-zero. Warnings do not.
 
 ## 8. First run
 
-Interactively, inside codex — type `$` to mention a skill, or `/skills` to browse:
+Interactively, inside codex. Start codex in the project folder on the conductor's pin, with the
+sandbox dispatch needs, then type `$` to mention a skill, or `/skills` to browse:
+
+```bash
+codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"
+```
 
 ```
+$mmo-codex:setup          check the install and pick this project's policy
 $mmo-codex:greenfield     generate a new app from a brief, in an empty folder
 $mmo-codex:brownfield     work on an existing repo
 $mmo-codex:policy         show or change this project's policy
 ```
 
-Headless, from a shell:
+[docs/tutorial-first-run.md](docs/tutorial-first-run.md) walks through a greenfield run and a
+brownfield run, gate by gate.
+
+Headless, from a shell, to check the cost figures against codex's own token count:
 
 ```bash
 node plugin/codex/run.mjs \
-  --brief=docs/brief-template.md \
-  --project-root=. \
-  --output-dir=.sdlc \
+  --brief=examples/quick-demo/brief.md \
+  --project-root="$HOME/mmo-runs/ping" \
+  --mode=greenfield \
   --policy=gpt-plus-flash \
+  --gates=auto-approve \
   --dry-run
 ```
 
-`--dry-run` renders the conductor prompt and the `codex exec` argv and exits without spending
-anything. Drop it to run for real. Add `--gates=auto-approve` for an unattended run.
-
-Afterwards:
+`--dry-run` prints the resolved policy, the pin, the run folder and the `codex exec` argv, and
+exits without spending anything. Create the project folder first (`mkdir -p ~/mmo-runs/ping`),
+then drop `--dry-run` to run for real. Afterwards:
 
 ```bash
-node tools/report.mjs .sdlc --markdown
+node plugin/scripts/report.mjs "$HOME/mmo-runs/ping/.sdlc" --markdown
 ```
+
+[docs/headless-runs.md](docs/headless-runs.md) has the whole procedure, including the token
+cross-check and the OpenAI usage dashboard check.
 
 ## Troubleshooting
 
@@ -223,7 +250,7 @@ node tools/report.mjs .sdlc --markdown
 exists because the capability findings this harness relies on were measured against 0.151.0.
 
 **A skill is not offered when you type `$`** — run `node plugin/codex/verify-setup.mjs --fix`
-(step 5), then restart codex, which caches the skill list at startup. Note that the eight skills
+(step 6), then restart codex, which caches the skill list at startup. Note that the eight skills
 which start a full billable run are deliberately excluded from implicit matching and so do not
 appear in suggestions; invoke them by name.
 
@@ -246,7 +273,7 @@ node plugin/scripts/uninstall-cleanup.mjs --dry-run   # see what would go
 node plugin/scripts/uninstall-cleanup.mjs             # do it, with prompts
 ```
 
-It removes `.sdlc/` (per-run records and telemetry), `.agents/` (the skill links from step 5),
+It removes `.sdlc/` (per-run records and telemetry), the skill links under `.agents/skills/` (step 6),
 and the `model-dispatch` MCP registration in `~/.codex/config.toml`. It asks before each, and
 defaults to *no* on `.sdlc/` since that one may hold committed history. `--yes` skips the
 prompts, `--keep-mcp` leaves the registration alone, and `--repo=<path>` targets another

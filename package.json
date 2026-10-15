@@ -8,8 +8,8 @@
   },
   "scripts": {
     "setup": "node tools/setup.mjs",
-    "report": "node tools/report.mjs",
-    "test": "node --test tools/test/*.test.mjs && node tools/test-mcp.mjs"
+    "report": "node plugin/scripts/report.mjs",
+    "test": "node --test --import ./tools/test/lib/stand-ins.mjs tools/test/*.test.mjs && node tools/test-mcp.mjs"
   },
   "license": "MIT",
   "repository": {

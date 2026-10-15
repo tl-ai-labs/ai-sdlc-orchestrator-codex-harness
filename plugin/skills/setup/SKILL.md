@@ -9,6 +9,12 @@ pause only when a human decision is genuinely required.
 Print one line per completed step so the user can see progress. Pause only when a step actually
 needs a human answer.
 
+**Paths.** `<plugin-root>` in the commands below is this plugin's own folder. Codex gave you this
+skill's file path with the skill; it ends in `/skills/setup/SKILL.md`, and the plugin root is that
+path with the ending removed (two folders above this file). Put it in each command in place of
+`<plugin-root>` and keep the single quotes: the path can contain spaces. `"$(pwd)"` is the project
+the user is standing in.
+
 # Scope
 
 This is the RE-VERIFY / RE-CONFIGURE flow. First-time install (getting the plugin onto the machine)
@@ -16,10 +22,10 @@ happens before this skill can exist. From there on, this covers everything: brid
 environment check, credential probe, mechanical-tier door, policy pick, and the hand-over banner.
 
 A clone-route install has a wizard that does the same work from a plain shell, before any session
-exists:
+exists. Run it from the clone's root; it takes no flags:
 
 ```bash
-node tools/setup.mjs --project-root=<path>
+node tools/setup.mjs
 ```
 
 Use that when there is no session to run a skill in. Everything below is the in-session equivalent.
@@ -27,7 +33,7 @@ Use that when there is no session to run a skill in. Everything below is the in-
 # 1. Build / rebuild the dispatch bridge (silent)
 
 ```bash
-node '{{PLUGIN_ROOT}}/codex/verify-setup.mjs' --fix --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/codex/verify-setup.mjs' --fix --project-root "$(pwd)"
 ```
 
 `--fix` installs the bridge's npm dependencies and TypeScript-compiles it. Idempotent — a no-op if
@@ -80,7 +86,7 @@ Decision matrix:
 When switching to the agent door:
 
 ```bash
-node '{{PLUGIN_ROOT}}/codex/verify-setup.mjs' --enable-agent --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/codex/verify-setup.mjs' --enable-agent --project-root "$(pwd)"
 ```
 
 This records the selection and builds the Python environment the agent path needs.
@@ -92,7 +98,7 @@ it.
 Read the current default:
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --print-only --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --print-only --project-root "$(pwd)"
 ```
 
 If it prints a policy name, the project already has one — print `current policy: <name>` and skip
@@ -101,12 +107,12 @@ to step 5.
 If the user named a policy when invoking this skill, honor it silently — no prompt, no browser:
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --policy=<name> --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --policy=<name> --project-root "$(pwd)"
 ```
 
 Otherwise use the same terminal picker as `$mmo-codex:policy change` shape 2. Skip its mid-run guard here
 (no run has started yet in setup); everything else applies — enumerate with `--list-json`, offer
-only the three selectable policies plus `Author a new policy (opens browser)`, then `--check-creds`
+only the four shipped policies plus `Author a new policy (opens browser)`, then `--check-creds`
 the pick before persisting it. See
 [plugin/skills/policy/SKILL.md](../policy/SKILL.md) for the full picker.
 
@@ -148,7 +154,7 @@ script rather than deleting anything by hand — setup's footprint includes a ma
 registration that is not obvious from the project directory:
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/uninstall-cleanup.mjs' --repo '{{PROJECT_ROOT}}' --dry-run
+node '<plugin-root>/scripts/uninstall-cleanup.mjs' --repo "$(pwd)" --dry-run
 ```
 
 Show the user what it found, then re-run without `--dry-run` to act on it. It prompts before each

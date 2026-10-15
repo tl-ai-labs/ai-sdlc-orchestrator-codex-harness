@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { loadPolicy, getModel } from "../dist/policy.js";
+import { getModel } from "../dist/policy.js";
 import {
   pickModel,
   resolveNamed,
@@ -19,6 +19,7 @@ import {
   simulatePolicyCost,
   unreachableModelIds,
 } from "../dist/routing.js";
+import { claudePolicy } from "./fixtures/claudePolicies.mjs";
 
 const ctx = (phase, task_type = "misc", module = "cross", retry_count = 0) => ({
   phase,
@@ -43,7 +44,7 @@ const V024_FLASH = {
   pricing: { input: 1.5, input_cached: 0.15, output: 9.0 },
 };
 
-/** One context per rule in the shipped policy, with the leaf it must reach. */
+/** One context per rule in opus-plus-flash, with the leaf it must reach. */
 const GOLDEN_ROUTES = [
   [ctx("requirements_analysis"), V024_OPUS],
   [ctx("architecture_design"), V024_OPUS],
@@ -63,10 +64,10 @@ const GOLDEN_ROUTES = [
   [ctx("codegen", "a_task_type_no_rule_names"), V024_OPUS],
 ];
 
-const shipped = () => loadPolicy({ policyName: "opus-plus-flash" });
+const golden = () => claudePolicy("opus-plus-flash");
 
-test("with no selection, the shipped policy routes exactly as it did before slots existed", () => {
-  const policy = shipped();
+test("with no selection, opus-plus-flash routes exactly as it did before slots existed", () => {
+  const policy = golden();
   for (const [context, expected] of GOLDEN_ROUTES) {
     const decision = pickModel(context, policy);
     const leaf = getModel(policy, decision.modelId);
@@ -78,7 +79,7 @@ test("with no selection, the shipped policy routes exactly as it did before slot
 });
 
 test("selecting the agent leaf moves the mechanical tier and nothing else", () => {
-  const policy = shipped();
+  const policy = golden();
   const overrides = { "gemini-flash": "flash-agsdk-worker" };
   for (const [context, expected] of GOLDEN_ROUTES) {
     const decision = pickModel(context, policy, overrides);
@@ -101,7 +102,7 @@ test("selecting the agent leaf moves the mechanical tier and nothing else", () =
 });
 
 test("the decision records which slot resolved, to what, and whether the run asked", () => {
-  const policy = shipped();
+  const policy = golden();
 
   const inherited = pickModel(ctx("tests", "test_unit"), policy);
   assert.deepEqual(inherited.selection, {
@@ -136,7 +137,7 @@ test("a policy with no slots resolves without consulting them", () => {
   // opus-only predates slots entirely. Its rules name a concrete leaf, so
   // resolution has to be a pass-through that leaves no trace behind — which is
   // what keeps every policy written before this change working untouched.
-  const policy = loadPolicy({ policyName: "opus-only" });
+  const policy = claudePolicy("opus-only");
   assert.equal(policy.select, undefined);
   const decision = pickModel(ctx("codegen", "dto"), policy);
   assert.equal(getModel(policy, decision.modelId).adapter, "builtin-anthropic");
@@ -177,7 +178,7 @@ test("a malformed slot spec is refused, and the message quotes the offending tex
 });
 
 test("choices are checked against the policy before the run, naming the legal values", () => {
-  const policy = shipped();
+  const policy = golden();
 
   assert.throws(
     () => validateSelectOverrides(policy, { "no-such-slot": "flash-completion" }),
@@ -209,7 +210,7 @@ test("an unvalidated bad choice is refused at routing, not silently defaulted", 
   // the default here would produce a run that quietly used the cheap tier while
   // its operator believed they had asked for the agent — numbers labelled as
   // the wrong thing, which is worse than a crash.
-  const policy = shipped();
+  const policy = golden();
   assert.throws(
     () => resolveNamed(policy, "gemini-flash", { "gemini-flash": "not-a-leaf" }),
     /not one of that slot's options/,
@@ -217,7 +218,7 @@ test("an unvalidated bad choice is refused at routing, not silently defaulted", 
 });
 
 test("a what-if simulation prices the tier this install would actually dispatch to", () => {
-  const policy = shipped();
+  const policy = golden();
   const events = [
     {
       phase: "tests",
@@ -244,8 +245,8 @@ test("a what-if simulation prices the tier this install would actually dispatch 
   assert.equal(asAgent.total_cost_usd, asDefault.total_cost_usd);
 });
 
-test("the shipped policy declares the agent leaf with everything the worker needs", () => {
-  const policy = shipped();
+test("opus-plus-flash declares the agent leaf with everything the worker needs", () => {
+  const policy = golden();
   const leaf = getModel(policy, "flash-agsdk-worker");
   assert.equal(leaf.adapter, "antigravity-worker");
   // A worker session has no natural end, so an abandonment deadline is not
@@ -281,13 +282,13 @@ test("with no selection made, the option the run cannot reach is excluded from p
   // to the shipped policy made every existing user's pre-flight construct an
   // AntigravityWorkerAdapter and halt on the absent virtualenv — a blocking
   // failure about a tier they never asked for and will never dispatch to.
-  const policy = shipped();
+  const policy = golden();
   const unreachable = unreachableModelIds(policy);
   assert.deepEqual([...unreachable], ["flash-agsdk-worker"]);
 });
 
 test("selecting the agent flips which option is excluded", () => {
-  const policy = shipped();
+  const policy = golden();
   const unreachable = unreachableModelIds(policy, { "gemini-flash": "flash-agsdk-worker" });
   assert.deepEqual([...unreachable], ["flash-completion"]);
 });
@@ -297,7 +298,7 @@ test("a leaf the rules name directly is never excluded", () => {
   // ever were excluded, pre-flight would stop checking the credential that
   // every premium phase depends on.
   for (const overrides of [{}, { "gemini-flash": "flash-agsdk-worker" }]) {
-    const unreachable = unreachableModelIds(shipped(), overrides);
+    const unreachable = unreachableModelIds(golden(), overrides);
     assert.equal(unreachable.has("opus"), false);
   }
 });
@@ -305,16 +306,16 @@ test("a leaf the rules name directly is never excluded", () => {
 test("a policy with no slots excludes nothing", () => {
   // Every policy written before slots existed. An empty set here is what keeps
   // pre-flight behaving for them exactly as it did.
-  const policy = loadPolicy({ policyName: "opus-only" });
+  const policy = claudePolicy("opus-only");
   assert.deepEqual([...unreachableModelIds(policy)], []);
   assert.deepEqual([...unreachableModelIds(policy, { "gemini-flash": "flash-agsdk-worker" })], []);
 });
 
-test("every leaf the shipped policy declares is either reachable or the loser of a slot", () => {
+test("every leaf opus-plus-flash declares is either reachable or the loser of a slot", () => {
   // The exclusion has to stay narrow. If a future edit widened it, a real leaf
   // could drop out of pre-flight silently and its missing credential would
   // surface mid-run instead — this counts the leaves and pins the arithmetic.
-  const policy = shipped();
+  const policy = golden();
   const unreachable = unreachableModelIds(policy);
   const reachable = policy.models.filter((m) => !unreachable.has(m.id));
   assert.equal(policy.models.length, reachable.length + unreachable.size);

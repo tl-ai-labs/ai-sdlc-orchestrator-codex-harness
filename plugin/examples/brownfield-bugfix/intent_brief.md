@@ -25,13 +25,14 @@ Same for a missing `username`. Same status, same shape.
 ## Files in scope
 
 - `src/auth.js` — add input validation before the credential check
+- `src/index.js` — the route's `catch` turns every error into HTTP 500, so it has to map a
+  validation error to 400 with the error body; nothing else in the file changes
 - `src/auth.spec.js` — the failing test should pass unchanged; a new test for `username`
   missing is welcome
 
 ## Files off-limits
 
-- `src/index.js`, `package.json`, `node_modules/` — untouched unless the fix genuinely needs
-  a route-level change (the fix belongs in the handler, not the middleware)
+- `package.json`, `node_modules/` — untouched
 - Standard off-limits apply
 
 ## Acceptance criteria

@@ -35,10 +35,62 @@ All of the above open PRs targeting **`develop`**, never `main` directly.
 
 1. Fork the repo (or branch directly if you have write access), create a feature branch off `develop`.
 2. Make your change. Keep the diff focused; one topic per PR.
-3. Run `npm test` from the repo root. It runs the tooling suite and then the MCP server's own, and every one of them is offline and free — no credential is read and no API call is made, so there is no reason not to run it.
-4. Run `node tools/setup.mjs` on a clean clone to verify it still passes.
-5. If you touched the plugin code, run a full pass locally and confirm the report still renders sensibly.
+3. Run `npm test` from the repo root. It runs the tooling suite and then the MCP server's own, and both are offline and free: no credential is read and no API call is made. The tooling suite needs root `npm ci` and the server built once (`npm ci && npm run build` in `plugin/mcp/model-dispatch`, the same steps CI runs). The table lists what keeps it off your machine's own state.
+
+   | Piece | What it does |
+   |---|---|
+   | `tools/test/lib/stand-ins.mjs` | Preloaded by `npm test`. Puts stand-in `codex`, `gcloud` and `npm` first on `PATH` and points `CODEX_HOME` at a temporary directory, so your `~/.codex` is never read or written. |
+   | `tools/test/lib/sandbox.mjs` | `codexSandbox()` gives a test its own temporary `HOME` and `CODEX_HOME`. The setup-wizard tests run inside one. |
+   | `tools/test/setup.test.mjs` | Runs the wizard's policy checks from a temporary copy of `tools/setup.mjs` and `plugin/`, so the policy a test pins never lands in your checkout's `.sdlc/project.json`. |
+   | `tools/test/offline.test.mjs` | Fails when a root test runs `codex`, `gcloud` or a script that does, outside the stand-ins. |
+   | `tools/test/node-floor.test.mjs` | Holds every `package.json` to one `engines.node` floor, CI to that Node major, and every locked package to that floor. |
+4. Run `node tools/setup.mjs` on a clean clone to verify it still passes. Unlike `npm test`, it uses your real `codex`: its last step registers the bridge in `~/.codex/config.toml`.
+5. If you touched the plugin code, run a full pass locally and confirm the report still renders sensibly. For a run in a codex session, install your branch first: [Test a branch in a codex session](#test-a-branch-in-a-codex-session).
 6. Open a pull request. Describe what changed and why in one or two paragraphs.
+
+## Test a branch in a codex session
+
+A codex session never runs your checkout. `codex plugin add` copies `plugin/` (with whatever `dist/` and `node_modules/` it holds) into `$CODEX_HOME/plugins/cache/tilicho-ai-labs/mmo-codex/<version>/`, and the session runs that copy until you add the plugin again. A copy installed before your branch runs the older code: the 0.1.0 install from the public marketplace predates the cost cap, the write hook and the session-model check.
+
+From the root of your checkout, on the branch under test, build the bridge and look at the
+registered marketplaces:
+
+```bash
+node plugin/codex/verify-setup.mjs --fix --project-root "$(pwd)"
+codex plugin marketplace list
+```
+
+When `tilicho-ai-labs` is listed with a root other than this checkout (the GitHub URL, or another
+clone), remove it first: `marketplace add` refuses a second source under the same name.
+
+```bash
+codex plugin marketplace remove tilicho-ai-labs
+```
+
+Then install from the checkout:
+
+```bash
+codex plugin marketplace add "$(pwd)"
+codex plugin add mmo-codex@tilicho-ai-labs
+```
+
+| Step | Why |
+|---|---|
+| `verify-setup.mjs --fix` | Builds the bridge in the checkout, so the copy `codex plugin add` makes carries a current `dist/` and its `node_modules/`. |
+| `marketplace add "$(pwd)"` | Registers this checkout as the marketplace, from `.agents/plugins/marketplace.json`. |
+| `plugin add` | Replaces the cached copy with this branch's `plugin/`. |
+
+Check the copy, then start codex on the driver pin, with the sandbox the bridge's pipes need:
+
+```bash
+codex plugin list
+node "$(ls -d "${CODEX_HOME:-$HOME/.codex}"/plugins/cache/tilicho-ai-labs/mmo-codex/*/ | tail -1)codex/verify-setup.mjs" --project-root "$(pwd)"
+codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"
+```
+
+`codex plugin list` shows `mmo-codex@tilicho-ai-labs` with the branch's version and this checkout's `plugin/` as its source. The copy's check reports no `mcp-build-stale` warning. At startup, codex asks about the plugin's write hook: "Trust all and continue" trusts it, and brownfield runs need that.
+
+After every pull or edit, run `verify-setup.mjs --fix` and `codex plugin add mmo-codex@tilicho-ai-labs` again: nothing else refreshes the copy. To go back to the released plugin, remove the marketplace and add the GitHub one again, as [INSTALL.md](INSTALL.md) shows.
 
 ## Commit messages
 
@@ -48,9 +100,9 @@ Do not add `Co-Authored-By:` trailers for AI assistants. The committer identity 
 
 ## Code style
 
-The tooling scripts under `tools/` (`setup.mjs`, `report.mjs`, `logfmt.mjs`, and the tests beside them in `tools/test/`) are plain ES modules. No TypeScript there, no build step; keep them that way so someone can read and modify them without a compiler.
+The tooling scripts under `tools/` (`setup.mjs`, the `report.mjs` wrapper, and the tests beside them in `tools/test/`) are plain ES modules. No TypeScript there, no build step; keep them that way so someone can read and modify them without a compiler.
 
-The same goes for `plugin/scripts/` (`verify-setup.mjs`, `probe-agent-worker.mjs`), and there the reason is stronger than preference: those two have to run on a machine that installed the harness by cloning it, and therefore has no `tools/` directory, no `node_modules/`, and no build output. Anything they import has to be either a Node builtin or something they can find inside the plugin.  Their tests still live in `tools/test/`, where `npm test` picks them up — a test file may import from `plugin/scripts/`, but not the other way round.
+The same goes for `plugin/scripts/` and `plugin/codex/`, and there the reason is stronger than preference: they have to run from an installed plugin, whose cache is a copy of `./plugin` with no `tools/` directory and no root `node_modules/`. Anything they import has to be a Node builtin, another file inside the plugin, or the bridge's build in `plugin/mcp/model-dispatch/dist/`, which `verify-setup.mjs --fix` builds inside the installed copy. `report.mjs` and the `lib/` files it imports use builtins only, so a report renders even before the bridge is built. `run.mjs`, `start-run.mjs`, `dispatch.mjs`, `write-manifest.mjs` and `collect-driver-usage.mjs` import the built bridge, so they need that build. Their tests still live in `tools/test/`, where `npm test` picks them up — a test file may import from `plugin/scripts/`, but not the other way round.
 
 The MCP server (`plugin/mcp/model-dispatch/`) is TypeScript with a build step. Follow the existing conventions in that directory.
 

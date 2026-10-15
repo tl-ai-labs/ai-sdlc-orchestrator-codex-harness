@@ -9,7 +9,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,7 +21,7 @@ import type {
   RunContext,
   TaskPacket,
 } from "../types.js";
-import { computeCostUsd } from "../pricing.js";
+import { computeCostUsd, estimateTokens } from "../pricing.js";
 import type { ModelAdapter } from "./ModelAdapter.js";
 import { applyVertexSurcharge, resolveGcpLocation, resolveGcpProject } from "./geminiTransports.js";
 import {
@@ -32,6 +32,7 @@ import {
   evidenceStem,
   mapSidecarTokens,
   resolveWorkerPython,
+  sidecarUsageSemantics,
   workerTaskMarkdown,
   workerThinkingLevel,
 } from "../delegation/workerProcess.js";
@@ -41,6 +42,8 @@ import {
   takeInventory,
 } from "../delegation/evidence.js";
 import { log } from "../log.js";
+import type { Priced } from "../prices.js";
+import { DispatchPricer, priceFields, refusedResult, type Clock } from "./dispatchPricer.js";
 
 // Module-location relative, not cwd — the server runs in the user's project.
 // dist/adapters/ → package root two levels up.
@@ -60,17 +63,19 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
   readonly location: string;
   /** Absolute path to the interpreter. */
   readonly python: string;
-  /** Pricing adjusted for a pinned regional endpoint. Cost reports read from here. */
-  readonly billedPricing: ModelPricing;
+  private readonly pricer: DispatchPricer;
+  private readonly killGraceSec: number;
 
   /**
    * Strict on purpose. preflight_dispatch constructs every adapter before the
    * run starts, so a missing project / interpreter / worker script surfaces
    * once at the start, not as a crash after premium phases are billed.
    */
-  constructor(config: ModelConfig) {
+  constructor(config: ModelConfig, options: { clock?: Clock; killGraceSec?: number } = {}) {
     this.id = config.id;
     this.modelConfig = config;
+    this.pricer = new DispatchPricer(config, options.clock);
+    this.killGraceSec = options.killGraceSec ?? WORKER_KILL_GRACE_SEC;
 
     const project = resolveGcpProject(process.env as Record<string, string | undefined>);
     if (!project) {
@@ -100,12 +105,24 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       workerDir: WORKER_DIR,
       exists: existsSync,
     });
+  }
 
-    this.billedPricing = applyVertexSurcharge(config.pricing, {
+  /** The card a delegation on `date` bills, regional surcharge applied. Priced per dispatch, never at construction. */
+  pricingOn(date: Date = this.pricer.now()): { unpriced: true; reason: string } | { unpriced: false; price: Priced; billed: ModelPricing } {
+    const price = this.pricer.price(date);
+    if (price.unpriced) return { unpriced: true, reason: price.reason };
+    const billed = applyVertexSurcharge(price.pricing, {
       backend: "vertex-adc",
       location: this.location,
-      modelName: config.model_name,
+      modelName: this.modelConfig.model_name,
     });
+    return { unpriced: false, price, billed };
+  }
+
+  /** The billed card for a delegation now; undefined when nothing prices the model today. */
+  get billedPricing(): ModelPricing | undefined {
+    const r = this.pricingOn();
+    return r.unpriced ? undefined : r.billed;
   }
 
   /** `cacheContext` accepted and ignored — no cache handle for agent sessions. */
@@ -116,6 +133,13 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
   ): Promise<ExecutionResult> {
     const started = Date.now();
     const startedAt = new Date(started).toISOString();
+
+    const dispatchDate = this.pricer.now();
+    const priced = this.pricingOn(dispatchDate);
+    if (priced.unpriced) {
+      return refusedResult(this.modelConfig, dispatchDate, priced.reason, packet.budget.maxOutputTokens);
+    }
+    const priceTags = priceFields(priced.price);
 
     // Workspace the agent may act in. Refused rather than defaulted to a
     // temp dir whose edits nobody would look at.
@@ -139,9 +163,12 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     const taskFile = join(outDir, `worker-task-${stem}.md`);
     const usageFile = join(outDir, `worker-usage-${stem}.json`);
 
+    const brief = workerTaskMarkdown(packet, { workdir });
     try {
       mkdirSync(outDir, { recursive: true });
-      writeFileSync(taskFile, workerTaskMarkdown(packet, { workdir }), "utf8");
+      writeFileSync(taskFile, brief, "utf8");
+      // The path repeats with the packet id; an earlier dispatch's sidecar would read as this session's usage.
+      rmSync(usageFile, { force: true });
     } catch (err: any) {
       return this.failure(started, `Could not stage the delegation brief: ${err?.message ?? err}`);
     }
@@ -185,21 +212,49 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       location: this.location,
     });
 
-    const run = await this.spawnWorker(args, workdir, timeoutSec, packet.id);
+    const run = await this.spawnWorker(args, workdir, timeoutSec, packet.id, runContext?.signal);
 
     const after = takeInventory(workdir, { exclude: [outDir] });
 
     // Read whatever the exit status: a failed delegation still spent tokens.
     const sidecar = readJsonIfPresent(usageFile);
-    const tokens = mapSidecarTokens(sidecar);
-    const cost = computeCostUsd(tokens, this.billedPricing);
+    // No sidecar and a non-zero exit nobody forced: the worker failed before its session, nothing was sent.
+    const sessionStarted = run.ok || run.killed || sidecar !== null;
+    const usageLost = sessionStarted && (sidecar?.usage === null || sidecar?.usage === undefined);
+    const tokens = usageLost
+      ? { input: estimateTokens(brief), input_cached: 0, output: 0, output_reasoning: 0 }
+      : mapSidecarTokens(sidecar);
+    const cost = computeCostUsd(tokens, priced.billed);
     const latency = Date.now() - started;
+    const usageLabel = usageLost ? { cost_provenance: "estimated" as const, usage_complete: false as const } : {};
+    if (usageLost) {
+      log("warn", "agsdk.usage_missing", {
+        packet_id: packet.id,
+        sidecar: sidecar ? "no_usage" : "absent",
+        killed: run.killed,
+        booked_input_tokens: tokens.input,
+      });
+    }
+    const runError = run.ok
+      ? undefined
+      : usageLost
+        ? `${run.error} (usage unknown; booked a one-prompt lower bound)`
+        : run.error;
 
     if (sidecar) {
+      const semantics = sidecarUsageSemantics(sidecar);
+      if (semantics === "unverified" && sidecar.usage) {
+        log("warn", "agsdk.usage_semantics_unverified", {
+          packet_id: packet.id,
+          sdk_version: sidecar.sdk_version ?? null,
+          billed_as: "disjoint (fresh = prompt_token_count, cached on top)",
+        });
+      }
       log("info", "agsdk.sidecar", {
         packet_id: packet.id,
         sdk: sidecar.sdk,
         sdk_version: sidecar.sdk_version,
+        usage_semantics: semantics,
         vertex_project: sidecar.vertex_project,
         vertex_location: sidecar.vertex_location,
         thinking: sidecar.thinking,
@@ -242,7 +297,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       startedAt,
       durationMs: latency,
       success: run.ok,
-      error: run.ok ? undefined : run.error,
+      error: runError,
       costUsd: cost,
       tokens,
       sidecar,
@@ -260,7 +315,9 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         cost_usd: cost,
         latency_ms: latency,
         success: false,
-        error: run.error,
+        error: runError,
+        ...priceTags,
+        ...usageLabel,
       };
       return {
         result: null,
@@ -269,9 +326,10 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         latency_ms: latency,
         cache_hit: false,
         success: false,
-        error: run.error,
+        error: runError,
         attempts: [attempt],
         terminal_reason: "vendor_error",
+        ...(usageLost ? { cost_provenance: "estimated" as const } : {}),
       };
     }
 
@@ -294,6 +352,8 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       cost_usd: cost,
       latency_ms: latency,
       success: true,
+      ...priceTags,
+      ...usageLabel,
     };
     return {
       result: parsed,
@@ -304,6 +364,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       success: true,
       attempts: [attempt],
       terminal_reason: "success",
+      ...(usageLost ? { cost_provenance: "estimated" as const } : {}),
     };
   }
 
@@ -319,7 +380,8 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     cwd: string,
     timeoutSec: number,
     packetId: string,
-  ): Promise<{ ok: true; stdout: string } | { ok: false; error: string; stdout: string }> {
+    signal?: AbortSignal,
+  ): Promise<{ ok: true; stdout: string; killed: false } | { ok: false; error: string; stdout: string; killed: boolean }> {
     const spawnStarted = Date.now();
     return new Promise((resolveRun) => {
       const child = spawn(this.python, args, {
@@ -336,6 +398,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       let stderr = "";
       let stderrLineBuf = "";
       let timedOut = false;
+      let aborted = false;
 
       child.stdout.on("data", (chunk) => (stdout += chunk.toString()));
       child.stderr.on("data", (chunk) => {
@@ -363,20 +426,34 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
             // Already gone — 'close' reports whatever it exited with.
           }
         },
-        (timeoutSec + WORKER_KILL_GRACE_SEC) * 1000,
+        (timeoutSec + this.killGraceSec) * 1000,
       );
+
+      const onAbort = () => {
+        aborted = true;
+        try {
+          if (child.pid) process.kill(-child.pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      };
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
 
       child.on("error", (err) => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         resolveRun({
           ok: false,
           error: `Could not start the agent worker with '${this.python}': ${err.message}`,
           stdout,
+          killed: false,
         });
       });
 
       child.on("close", (code) => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         if (stderrLineBuf) {
           log("trace", "agsdk.worker.stderr", { packet_id: packetId, line: stderrLineBuf });
           stderrLineBuf = "";
@@ -385,6 +462,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
           packet_id: packetId,
           exit_code: code,
           timed_out: timedOut,
+          aborted,
           duration_ms: Date.now() - spawnStarted,
           stdout_bytes: Buffer.byteLength(stdout),
           stderr_bytes: Buffer.byteLength(stderr),
@@ -393,11 +471,16 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
           resolveRun({
             ok: false,
             error:
-              `The agent worker was killed after ${timeoutSec + WORKER_KILL_GRACE_SEC}s ` +
+              `The agent worker was killed after ${timeoutSec + this.killGraceSec}s ` +
               `(its own deadline is ${timeoutSec}s — raise worker_timeout_sec on the policy ` +
               `leaf if the task legitimately needs longer). ${tail(stderr)}`,
             stdout,
+            killed: true,
           });
+          return;
+        }
+        if (aborted) {
+          resolveRun({ ok: false, error: "The agent worker was stopped: the dispatch was abandoned.", stdout, killed: true });
           return;
         }
         if (code !== 0) {
@@ -405,10 +488,11 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
             ok: false,
             error: `The agent worker exited ${code}. ${tail(stderr)}`,
             stdout,
+            killed: false,
           });
           return;
         }
-        resolveRun({ ok: true, stdout });
+        resolveRun({ ok: true, stdout, killed: false });
       });
     });
   }

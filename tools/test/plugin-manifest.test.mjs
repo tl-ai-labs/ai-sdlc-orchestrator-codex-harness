@@ -14,9 +14,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { sessionHookCommands } from "../../plugin/codex/hook-wiring.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PLUGIN_ROOT = join(REPO_ROOT, "plugin");
@@ -29,6 +33,13 @@ function manifest() {
 test("the codex plugin manifest exists and parses", () => {
   assert.ok(existsSync(MANIFEST_PATH), "plugin/.codex-plugin/plugin.json must ship");
   assert.doesNotThrow(() => manifest());
+});
+
+test("README version badge matches the plugin version", () => {
+  const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf-8");
+  const badge = readme.match(/badge\/version-(\d+\.\d+\.\d+)-/);
+  assert.ok(badge, "README.md must carry a version badge");
+  assert.equal(badge[1], manifest().version);
 });
 
 test("manifest carries the required identity fields", () => {
@@ -137,4 +148,89 @@ test("the marketplace file is not swept up by the .agents/ gitignore", () => {
     "ignoring all of .agents/ would drop the committed marketplace manifest",
   );
   assert.match(ignore, /\.agents\/skills\//, "the generated skills links should still be ignored");
+});
+
+// ── the write hook the plugin ships ──────────────────────────────────
+
+const HOOKS_PATH = join(PLUGIN_ROOT, "hooks", "hooks.json");
+const PLACEHOLDER = "${PLUGIN_ROOT}";
+const hooksJson = () => JSON.parse(readFileSync(HOOKS_PATH, "utf-8"));
+
+test("the manifest points at hooks/hooks.json, Codex's default location", () => {
+  assert.equal(manifest().hooks, "./hooks/hooks.json");
+  assert.ok(existsSync(HOOKS_PATH));
+});
+
+test("hooks.json declares one PreToolUse group with one command for apply_patch and Bash", () => {
+  const { hooks } = hooksJson();
+  assert.deepEqual(Object.keys(hooks), ["PreToolUse"]);
+  assert.equal(hooks.PreToolUse.length, 1, "one group gives one trust entry, so the guard is trusted whole or not at all");
+  const [group] = hooks.PreToolUse;
+  assert.equal(group.hooks.length, 1);
+  const re = new RegExp(`^(?:${group.matcher})$`);
+  for (const tool of ["apply_patch", "Bash"]) assert.ok(re.test(tool), tool);
+  for (const tool of ["Read", "write_stdin", "BashX"]) assert.ok(!re.test(tool), tool);
+  const [handler] = group.hooks;
+  assert.equal(handler.type, "command");
+  assert.ok(!("timeout" in handler), "a hook that times out lets the call through; the 600 s default is kept");
+  assert.ok(!("statusMessage" in handler));
+});
+
+test("the hook entry is pinned: changing it drops every install's saved trust, and an untrusted hook is silent", () => {
+  const { hooks } = hooksJson();
+  const { _comment, ...entry } = hooks.PreToolUse[0];
+  assert.deepEqual(entry, {
+    matcher: "apply_patch|Bash",
+    hooks: [{ type: "command", command: 'node "${PLUGIN_ROOT}/codex/hooks/write-contract-check.mjs"' }],
+  });
+});
+
+test("the hook command quotes the plugin root and names a script that ships", () => {
+  const { command } = hooksJson().hooks.PreToolUse[0].hooks[0];
+  assert.ok(command.startsWith(`node "${PLACEHOLDER}/`), command);
+  const rel = command.match(/"\$\{PLUGIN_ROOT\}\/([^"]+)"/)[1];
+  assert.ok(existsSync(join(PLUGIN_ROOT, rel)), rel);
+});
+
+/** A copy of the plugin, as Codex installs it, under a cache path with a space in it. No node_modules, no dist. */
+function spacedPluginCopy() {
+  const base = mkdtempSync(join(tmpdir(), "hook-cmd-"));
+  const root = join(base, "plugins cache", "tilicho-ai-labs", "mmo-codex", "9.9.9");
+  mkdirSync(dirname(root), { recursive: true });
+  cpSync(PLUGIN_ROOT, root, {
+    recursive: true,
+    filter: (src) => !/[\\/](node_modules|dist)([\\/]|$)/.test(src.slice(PLUGIN_ROOT.length)),
+  });
+  return { base, root };
+}
+
+test("the hook runs from an installed copy whose path has a space, through sh and zsh, in both wirings", () => {
+  const { base, root } = spacedPluginCopy();
+  const project = mkdtempSync(join(tmpdir(), "hook-proj-"));
+  try {
+    mkdirSync(join(project, ".git"));
+    const { command } = hooksJson().hooks.PreToolUse[0].hooks[0];
+    const lines = [
+      ["plugin", command.replaceAll(PLACEHOLDER, root)],
+      ["run", sessionHookCommands(hooksJson().hooks, root)[0].commands[0]],
+    ];
+    const shells = ["/bin/sh", "/bin/zsh"].filter((s) => existsSync(s));
+    for (const shell of shells) {
+      for (const [wiring, line] of lines) {
+        const ask = (payload) => {
+          const r = spawnSync(shell, ["-c", line], { input: JSON.stringify({ cwd: project, ...payload }), encoding: "utf8", cwd: project });
+          assert.equal(r.status, 0, `${shell} ${wiring}: ${r.stderr}`);
+          assert.doesNotMatch(r.stderr, /Cannot find module|No such file|not found/, `${shell} ${wiring}`);
+          return r.stdout === "" ? "allow" : JSON.parse(r.stdout).hookSpecificOutput.permissionDecision;
+        };
+        const patch = { tool_name: "apply_patch", tool_input: { command: "*** Begin Patch\n*** Add File: .env.local\n+X=1\n*** End Patch" } };
+        assert.equal(ask(patch), "deny", `${shell} ${wiring}: the refusal arrives as JSON`);
+        assert.equal(ask({ tool_name: "Bash", tool_input: { command: "ls" } }), "allow", `${shell} ${wiring}: an allow is an empty reply`);
+      }
+    }
+    assert.ok(!existsSync(join(project, ".sdlc")), "the hook leaves no .sdlc folder in a project that has none");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+    rmSync(project, { recursive: true, force: true });
+  }
 });

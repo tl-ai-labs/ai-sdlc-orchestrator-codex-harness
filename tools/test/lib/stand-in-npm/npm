@@ -1,0 +1,9 @@
+#!/bin/sh
+# Stand-in for npm in the root tests: tools/setup.mjs runs `npm ci` and `npm run build` in the server directory when
+# the bridge is not built, which would reach the network and rewrite that node_modules. It records the call and exits 0.
+if [ -z "$CODEX_HOME" ] || [ ! -f "$CODEX_HOME/.mmo-test-sandbox" ]; then
+  echo "npm stand-in: CODEX_HOME is not a test sandbox" >&2
+  exit 97
+fi
+printf 'npm %s\n' "$*" >> "$CODEX_HOME/stand-in-calls.log"
+exit 0

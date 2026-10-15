@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "_comment": "Brownfield write contract. Codex keys saved trust on this handler's command, matcher, timeout and statusMessage: changing any of them leaves every install's hook untrusted, and an untrusted hook does not run and says nothing. tools/test/plugin-manifest.test.mjs pins the entry.",
+        "matcher": "apply_patch|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/codex/hooks/write-contract-check.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

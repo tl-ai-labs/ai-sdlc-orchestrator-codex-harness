@@ -16,8 +16,14 @@ src/
 
 ## Try it
 
+A brownfield run works on the git repository that holds the folder it starts in, so copy this
+folder out of the harness and make it a repository of its own first. Then start codex there as
+[docs/tutorial-first-run.md](../../../docs/tutorial-first-run.md) shows.
+
 ```bash
-cd plugin/examples/brownfield-deps-upgrade
+cp -R plugin/examples/brownfield-deps-upgrade ~/brownfield-deps-upgrade && cd ~/brownfield-deps-upgrade
+printf 'node_modules/\n.sdlc/\n' > .gitignore
+git init -q && git add -A && git commit -qm 'fixture'
 npm install
 npm audit           # reports the CVE
 npm test            # 1 test passes

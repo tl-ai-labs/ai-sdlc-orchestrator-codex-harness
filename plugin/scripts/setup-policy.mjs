@@ -21,20 +21,21 @@
  *   node setup-policy.mjs --policy=<name>           # scripted; skip browser, just write the name
  *   node setup-policy.mjs --no-browser              # start server, print URL, don't auto-open
  *   node setup-policy.mjs --skip-install            # assume npm install already ran
- *   node setup-policy.mjs --print-only              # print resolved default_policy from project.json; no writes
+ *   node setup-policy.mjs --print-only              # print default_policy from project.json (stderr names a routing-policy.yaml that overrides it); no writes
  *   node setup-policy.mjs --list-json               # enumerate policies as JSON (no writes)
- *   node setup-policy.mjs --check-creds --policy=X  # verify creds for a policy; JSON out
- *   node setup-policy.mjs --guard-active-run        # check .sdlc/local/state.json; JSON out
+ *   node setup-policy.mjs --check-creds --policy=X  # verify creds for a policy (routing-policy.yaml wins); JSON out
+ *   node setup-policy.mjs --guard-active-run        # a run holding the write contract or stopped at a gate (its run folder); JSON out
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createConnection } from "node:net";
 import { platform } from "node:os";
 import { OFF_LIMITS_DEFAULT } from "./lib/off-limits.mjs";
+import { openRuns } from "./lib/open-runs.mjs";
 // The Gemini credential question is already answered, correctly, in
 // verify-setup.mjs. Importing it keeps one answer instead of two that
 // disagree — see ALTERNATIVE_DOORS below for what the disagreement was.
@@ -46,6 +47,7 @@ import {
   hasGeminiCredentials,
   hasVertexCredentials,
 } from "../codex/verify-setup.mjs";
+import { readMmoSelectFile } from "../codex/mmoSelect.mjs";
 
 export { OFF_LIMITS_DEFAULT };
 
@@ -299,29 +301,53 @@ function waitForPolicySave(before, timeoutMs) {
 
 // ── policy YAML introspection (line-based, avoids a runtime dep) ─────
 //
-// --list-json / --check-creds need three signals per policy:
+// --list-json / --check-creds need four signals per policy:
 //   1. every model's auth.env
-//   2. any model uses adapter: antigravity-worker  → requires_vertex_adc
-//   3. any model uses adapter: claude-cli          → requires_claude_cli
+//   2. any model uses adapter: antigravity-worker          → requires_vertex_adc
+//   3. any model uses adapter: builtin-anthropic/claude-cli → anthropic_adapters
+//   4. the top-level driver: block's model_name             → driver_model, non_gpt_driver
 //
 // Bringing in the `yaml` package would work but the plugin cache doesn't
 // have a top-level node_modules — only plugin/policy-console does, and only
 // after the browser flow runs `npm install` there. Line-scanning stays free
 // of that dependency.
 
+// Block form, `- adapter:` as an item's first key, and flow-mapping items.
+const ADAPTER_KEY = /(?:^[ \t]*(?:-[ \t]+)?|[{,][ \t]*)adapter[ \t]*:[ \t]*["']?([A-Za-z0-9_.:-]+)/gm;
+
+function withoutComments(text) {
+  return text.split(/\r?\n/).map((line) => line.replace(/(^|\s)#.*$/, "")).join("\n");
+}
+
+/** The top-level driver: block's model_name, in block or flow form; `present: false` when there is no block. */
+function driverModel(lines) {
+  const at = lines.findIndex((l) => /^driver\s*:/.test(l));
+  if (at === -1) return { present: false, model: null };
+  const block = [lines[at].replace(/^driver\s*:/, "")];
+  for (const line of lines.slice(at + 1)) {
+    if (/^\S/.test(line)) break;
+    block.push(line);
+  }
+  const m = /(?:^|[\s{,])model_name\s*:\s*["']?([^"'\s,{}]+)/.exec(block.join("\n"));
+  return { present: true, model: m?.[1] ?? null };
+}
+
 function introspectPolicy(name, path) {
   let text;
   try { text = readFileSync(path, "utf8"); }
   catch (e) { return { name, error: `read failed: ${e?.message ?? e}` }; }
 
-  if (!/^\s*models\s*:/m.test(text) || !/^\s*-?\s*adapter\s*:/m.test(text)) {
+  const code = withoutComments(text);
+  const adapters = new Set();
+  for (const m of code.matchAll(ADAPTER_KEY)) {
+    adapters.add(m[1]);
+  }
+
+  if (!/^\s*models\s*:/m.test(code) || adapters.size === 0) {
     return { name, error: "not a recognizable policy (missing models: or adapter:)" };
   }
 
-  const adapters = new Set();
-  for (const m of text.matchAll(/^\s*adapter\s*:\s*([A-Za-z0-9_.:-]+)/gm)) {
-    adapters.add(m[1]);
-  }
+  const driver = driverModel(code.split("\n"));
 
   // `auth:` appears in two shapes:
   //   auth: { env: GEMINI_API_KEY }
@@ -340,8 +366,45 @@ function introspectPolicy(name, path) {
     adapters: [...adapters].sort(),
     required_env: [...envVars].sort(),
     requires_vertex_adc: adapters.has("antigravity-worker"),
-    requires_claude_cli: adapters.has("claude-cli"),
+    anthropic_adapters: anthropicAdapters(adapters),
+    driver_model: driver.model,
+    // Same rule as shippedPresetNames in the bridge's policy.ts: a driver block must pin a GPT model.
+    non_gpt_driver: driver.present && !/^gpt-/.test(driver.model ?? ""),
   };
+}
+
+// This harness runs no Anthropic model (D9), so a policy naming one of these cannot run here.
+const ANTHROPIC_ADAPTERS = ["builtin-anthropic", "claude-cli"];
+
+function anthropicAdapters(adapters) {
+  return ANTHROPIC_ADAPTERS.filter((a) => adapters.has(a));
+}
+
+function isRunnable(info) {
+  return !info.error && info.anthropic_adapters.length === 0 && !info.non_gpt_driver;
+}
+
+function runnablePolicyNames() {
+  return introspectAllPolicies()
+    .filter(isRunnable)
+    .map((p) => p.name)
+    .sort();
+}
+
+/** Why a recognizable policy cannot run here, or null when it can. */
+function runRefusal(info) {
+  if (info.error || isRunnable(info)) return null;
+  const runnable = `Runnable policies: ${runnablePolicyNames().join(", ")}.`;
+  if (info.anthropic_adapters.length > 0) {
+    return (
+      `policy "${info.name}" names an Anthropic adapter (${info.anthropic_adapters.join(", ")}), and this harness ` +
+      `runs no Anthropic model. ${runnable}`
+    );
+  }
+  const pin = info.driver_model
+    ? `pins the conductor to '${info.driver_model}', which is not a GPT model`
+    : `has a driver: block with no model_name`;
+  return `policy "${info.name}" ${pin}: this harness runs its conductor in codex on a GPT model only. ${runnable}`;
 }
 
 function introspectAllPolicies() {
@@ -381,25 +444,13 @@ function probeVertexAdc() {
   }
 }
 
-function probeClaudeCli() {
-  try {
-    const r = spawnSync("claude", ["--version"], { encoding: "utf8", stdio: "pipe" });
-    if (r.error) return { ok: false, reason: r.error.code === "ENOENT" ? "claude binary not found" : r.error.message };
-    if (r.status !== 0) return { ok: false, reason: (r.stderr || "").trim().split("\n")[0] || `claude --version exit ${r.status}` };
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, reason: e?.message ?? String(e) };
-  }
-}
-
 function envFix(name) {
   if (name === "OPENAI_API_KEY") return "export OPENAI_API_KEY=...  (get one from platform.openai.com/api-keys)";
   if (name === "GEMINI_API_KEY") return "export GEMINI_API_KEY=...  (get one from aistudio.google.com/apikey)";
-  // Deliberately no ANTHROPIC_API_KEY branch (D9). The carried Anthropic
-  // policies are non-selectable replay fixtures, so this should be
-  // unreachable for them — but if one is ever picked by hand, the generic
-  // line below is the right answer. Telling someone to go obtain an
-  // Anthropic key is the one thing codex setup must never do.
+  // Deliberately no ANTHROPIC_API_KEY branch (D9): a policy naming an
+  // Anthropic adapter is refused before its env vars are read, and telling
+  // someone to go obtain an Anthropic key is the one thing codex setup must
+  // never do.
   return `export ${name}=...`;
 }
 
@@ -444,15 +495,99 @@ function geminiDoorState(env = process.env) {
   return { open: hasGeminiCredentials({ env, vertex }), vertex };
 }
 
-function checkCredsFor(policyName) {
-  const path = join(POLICIES_DIR, policyName + ".yaml");
+const SERVER_DIST = join(PLUGIN_ROOT, "mcp", "model-dispatch", "dist");
+
+/** The bridge's YAML parser and slot routing, or null before the bridge is built. */
+async function loadRoutingTools() {
+  try {
+    const [policy, routing] = await Promise.all([
+      import(pathToFileURL(join(SERVER_DIST, "policy.js")).href),
+      import(pathToFileURL(join(SERVER_DIST, "routing.js")).href),
+    ]);
+    if (!policy.parsePolicyText || !routing.unreachableModelIds) return null;
+    return { parse: policy.parsePolicyText, unreachable: routing.unreachableModelIds, parseSelect: routing.parseSelectOverrides };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Credentials only for the models a run can reach: a select slot's options
+ * the run did not choose are skipped, as the bridge's preflight skips them.
+ * Without a built bridge every model counts.
+ */
+function reachableInfo(info, path, tools, selectSpec) {
+  if (!tools) return info;
+  let raw;
+  try {
+    raw = tools.parse(readFileSync(path, "utf8"));
+  } catch {
+    return info;
+  }
+  if (!Array.isArray(raw?.models)) return info;
+  let skipped = new Set();
+  try {
+    skipped = tools.unreachable(raw, tools.parseSelect(selectSpec));
+  } catch { /* an unusable selection: every model counts */ }
+  const models = raw.models.filter((m) => !skipped.has(m?.id));
+  const adapters = new Set(models.map((m) => m?.adapter).filter(Boolean));
+  const env = new Set(models.map((m) => m?.auth?.env).filter((e) => typeof e === "string"));
+  return {
+    ...info,
+    adapters: [...adapters].sort(),
+    required_env: [...env].sort(),
+    requires_vertex_adc: adapters.has("antigravity-worker"),
+    skipped_models: [...skipped].sort(),
+  };
+}
+
+/** The project's routing-policy.yaml and the name on its `name:` line, or null when there is none. */
+function projectOverride(projectRoot) {
+  const path = join(projectRoot, "routing-policy.yaml");
+  if (!existsSync(path)) return null;
+  let name = "routing-policy.yaml";
+  try {
+    name = /^name:\s*["']?([^"'\s#]+)/m.exec(readFileSync(path, "utf8"))?.[1] ?? name;
+  } catch { /* introspectPolicy reports the read failure */ }
+  return { name, path };
+}
+
+function credsTarget(policyName, projectRoot) {
+  const override = projectOverride(projectRoot);
+  if (override) {
+    return {
+      ...override,
+      source: "project-override",
+      note:
+        `${override.path} overrides --policy and default_policy for every run in this project, ` +
+        `so its credentials were checked instead of '${policyName}'.`,
+    };
+  }
+  return { name: policyName, path: join(POLICIES_DIR, policyName + ".yaml"), source: "preset", note: null };
+}
+
+async function checkCredsFor(policyName, projectRoot) {
+  const target = credsTarget(policyName, projectRoot);
+  const checked = { policy: { name: target.name, source: target.source, path: target.path }, ...(target.note ? { note: target.note } : {}) };
+  const result = await checkCredsForFile(target, projectRoot);
+  return { ...result, ...checked };
+}
+
+async function checkCredsForFile({ name: policyName, path }, projectRoot) {
   if (!existsSync(path)) {
     return { ok: false, missing: [{ kind: "policy", name: policyName, fix: `policy "${policyName}" not found in ${POLICIES_DIR}` }] };
   }
-  const info = introspectPolicy(policyName, path);
-  if (info.error) {
-    return { ok: false, missing: [{ kind: "policy", name: policyName, fix: info.error }] };
+  const lineInfo = introspectPolicy(policyName, path);
+  if (lineInfo.error) {
+    return { ok: false, missing: [{ kind: "policy", name: policyName, fix: lineInfo.error }] };
   }
+  const refusal = runRefusal(lineInfo);
+  if (refusal) {
+    return { ok: false, missing: [{ kind: "policy", name: policyName, fix: refusal }] };
+  }
+  // The order a dispatch sees: bridgeEnv injects the stored file whenever MMO_SELECT is unset.
+  const selectSpec = process.env.MMO_SELECT || readMmoSelectFile(projectRoot) || process.env.SDLC_SELECT;
+  const info = reachableInfo(lineInfo, path, await loadRoutingTools(), selectSpec);
   const missing = [];
   for (const envName of info.required_env) {
     if (process.env[envName]) continue;
@@ -503,40 +638,23 @@ function checkCredsFor(policyName) {
       }
     }
   }
-  if (info.requires_claude_cli) {
-    const p = probeClaudeCli();
-    if (!p.ok) missing.push({ kind: "claude_cli", fix: "install Claude Code CLI and log in with your Max account", reason: p.reason });
-  }
   return missing.length === 0 ? { ok: true } : { ok: false, missing };
 }
 
 // ── active-run guard ─────────────────────────────────────────────────
 //
-// A brownfield run mid-flight has a policy pinned into its provenance and
-// task packets already dispatched under it. Changing default_policy
-// underneath would surface as inconsistent telemetry rows and confused
-// resumers, so $mmo-codex:policy change refuses until the run reaches a
-// terminal state. session-hydrate.mjs treats `complete`/`aborted` as
-// terminal; we accept `completed` and `failed` as well since callers may
-// spell it either way.
-
-const TERMINAL_RUN_STATUSES = new Set(["complete", "completed", "aborted", "failed"]);
+// A run mid-flight has a policy pinned into its provenance and task packets
+// already dispatched under it, so $mmo-codex:policy change refuses while a
+// run holds the write contract or waits at a gate it never got past (its
+// state.json), until that run records its end.
 
 function checkActiveRun(projectRoot) {
-  const path = join(projectRoot, ".sdlc", "local", "state.json");
-  if (!existsSync(path)) return { active: false };
-  let parsed;
-  try { parsed = JSON.parse(readFileSync(path, "utf8")); }
-  catch { return { active: false }; }
-  if (!parsed || typeof parsed !== "object") return { active: false };
-  const status = parsed.status;
-  if (!status || TERMINAL_RUN_STATUSES.has(status)) return { active: false };
-  return {
-    active: true,
-    run_id: parsed.run_id ?? null,
-    phase: parsed.phase ?? null,
-    status,
-  };
+  const runs = openRuns(projectRoot);
+  const live = runs.find((r) => r.write_contract === "live");
+  if (live) return { active: true, run_id: live.run_id, phase: live.phase, status: "live", write_contract: "live" };
+  const waiting = runs.find((r) => r.gate_pending);
+  if (!waiting) return { active: false };
+  return { active: true, run_id: waiting.run_id, phase: waiting.phase, status: waiting.status };
 }
 
 // ── main flows ───────────────────────────────────────────────────────
@@ -544,8 +662,9 @@ function checkActiveRun(projectRoot) {
 async function scriptedFlow(policyName, resolved) {
   const existing = listPolicies();
   if (!existing.includes(policyName)) {
-    fail(`policy "${policyName}" not found in ${POLICIES_DIR}. Available: ${existing.join(", ")}`);
+    fail(`policy "${policyName}" not found in ${POLICIES_DIR}. Available: ${runnablePolicyNames().join(", ")}`);
   }
+  refuseUnrunnable(policyName);
   if (!resolved.hasGit) noteGitFallback(resolved.root);
   const path = saveDefaultPolicy(resolved.root, policyName);
   log(`wrote default_policy="${policyName}" to ${path}`);
@@ -555,6 +674,18 @@ async function printOnlyFlow(resolved) {
   const existing = readProjectJson(join(resolved.root, ".sdlc"));
   const name = existing.default_policy ?? null;
   process.stdout.write((name ?? "") + "\n");
+  const override = projectOverride(resolved.root);
+  if (override) {
+    process.stderr.write(
+      `setup-policy: runs in this project use ${override.path} (policy '${override.name}'), ` +
+        `which overrides default_policy and --policy.\n`,
+    );
+  }
+}
+
+function refuseUnrunnable(policyName) {
+  const refusal = runRefusal(introspectPolicy(policyName, join(POLICIES_DIR, policyName + ".yaml")));
+  if (refusal) fail(refusal);
 }
 
 function noteGitFallback(root) {
@@ -607,7 +738,7 @@ async function interactiveFlow(resolved, args) {
   process.stderr.write("\n");
   process.stderr.write(`  → Configure your policy in the browser, then click Save.\n`);
   process.stderr.write(`  → The terminal detects your save automatically (no Enter needed).\n`);
-  process.stderr.write(`  → To skip (pipelines will fall back to opus-plus-flash), press Ctrl-C.\n\n`);
+  process.stderr.write(`  → To skip (runs will fall back to gpt-plus-flash), press Ctrl-C.\n\n`);
 
   // Wait for a save (or Enter in a real TTY, or timeout). fs.watch is the
   // primary path because Claude Code's Bash tool doesn't provide interactive
@@ -619,7 +750,7 @@ async function interactiveFlow(resolved, args) {
 
   const { added, modified } = diffPolicies(before);
   // Strip the .yaml extension — `default_policy` in project.json is a policy
-  // *name* (`opus-only`, `opus-plus-flash`), not a filename. Downstream
+  // *name* (`gpt-plus-flash`, `flash-agsdk-only`), not a filename. Downstream
   // consumers (session-hydrate, MCP policy loader, $mmo-codex:policy print) all
   // treat it as the bare stem; the old single-candidate branch left the
   // extension on, producing `default_policy="foo.yaml"` and 404s downstream.
@@ -635,15 +766,15 @@ async function interactiveFlow(resolved, args) {
       cleanup();
       return;
     }
-    const existing = listPolicies();
+    const existing = runnablePolicyNames();
     process.stderr.write("\nNo new policy detected.\n");
-    process.stderr.write("Available on-disk policies:\n");
+    process.stderr.write("Runnable on-disk policies:\n");
     for (const name of existing) process.stderr.write(`  • ${name}\n`);
     const ans = await prompt(
       "\nType a policy name to use as this project's default, or press Enter to skip: ",
     );
     if (!ans) {
-      log("skipped — no default_policy written; pipelines will use opus-plus-flash.");
+      log("skipped — no default_policy written; runs will use gpt-plus-flash.");
       cleanup();
       return;
     }
@@ -684,7 +815,7 @@ async function main() {
   }
   if (args.checkCreds) {
     if (!args.policy) fail("--check-creds requires --policy=<name>");
-    process.stdout.write(JSON.stringify(checkCredsFor(args.policy)) + "\n");
+    process.stdout.write(JSON.stringify(await checkCredsFor(args.policy, resolved.root)) + "\n");
     return;
   }
   if (args.printOnly) return printOnlyFlow(resolved);

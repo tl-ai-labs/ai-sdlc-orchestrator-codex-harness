@@ -2,24 +2,33 @@
  * Shared types for the multi-model orchestration layer.
  */
 
-export type Phase =
-  | "requirements_analysis"
-  | "architecture_design"
-  | "plan_task_packets"
-  | "codegen"
-  | "tests"
-  | "docs"
-  | "debug"
-  | "senior_code_review"
-  | "security_review"
-  | "refactor"
-  | "final_report"
-  // Brownfield additions (v1). Discovery is scoped to Tier 1 repo read;
-  // change_plan is the brownfield analog of architecture_design (delta doc
-  // rather than full subsystem design). Both routed to premium tier by
-  // default — see plugin/config/policies/*.yaml.
-  | "discovery"
-  | "change_plan";
+/**
+ * The phase names a packet or a logged phase may carry; the bridge refuses
+ * any other, because a name no policy rule matches routes to the default
+ * tier and gets no row of its own in the report. `discovery` and
+ * `change_plan` are brownfield's (change_plan is its delta design).
+ */
+export const PHASES = [
+  "requirements_analysis",
+  "architecture_design",
+  "plan_task_packets",
+  "codegen",
+  "tests",
+  "docs",
+  "debug",
+  "senior_code_review",
+  "security_review",
+  "refactor",
+  "final_report",
+  "discovery",
+  "change_plan",
+] as const;
+
+export type Phase = (typeof PHASES)[number];
+
+export function isPhase(value: unknown): value is Phase {
+  return typeof value === "string" && (PHASES as readonly string[]).includes(value);
+}
 
 export interface FileSlice {
   path: string;
@@ -73,10 +82,10 @@ export interface TelemetryEvent {
    * Where the cost figure on this event actually comes from. `vendor` —
    * real vendor-reported usage from a dispatched call. `estimated` — a
    * direct-tier call priced by the character-count heuristic because no
-   * vendor usage was available. `modeled` — codex-specific: the driver
-   * session itself never dispatches through this server (D1's conductor
-   * role), so its cost is derived after the fact from `codex exec --json`
-   * turn usage at the pinned rates, not from a live vendor call. `none` — no
+   * vendor usage was available. `modeled` — token counts priced at the
+   * dated price list's rates, not a live vendor bill: the driver's own turns,
+   * which never dispatch through this server, and a seat adapter's
+   * (codex-cli) dispatches. `none` — no
    * model call was made at all: a phase the intent skipped, or one the
    * conductor completed in-session without dispatching. Its zeros are facts
    * rather than estimates, and its real token cost, where there is any,
@@ -109,10 +118,40 @@ export interface TelemetryEvent {
   /** Output-cap doubling attempts share a task_id. attempt_number is 1-indexed. */
   attempt_number?: number;
   ceiling_used?: number;
-  retry_reason?: "output_cap" | "validation" | "escalation";
+  retry_reason?: RetryReason;
   artifact_path?: string;
   error?: string;
+  /** `list` (the dated price list) or `custom` (the policy block under pricing_override). */
+  price_basis?: PriceBasis;
+  /** `unverified`: a tiered model whose card no vendor-reported per-request count proves (summed or estimated usage). */
+  price_tier?: PriceTierLabel;
+  /** The verified date of the list entry that priced this event; null for a custom price. */
+  price_verified?: string | null;
+  /** One request's whole prompt, cached tokens included. Set only where one event is one request. */
+  prompt_tokens?: number;
+  /** `false`: the tokens are a lower bound, because the call's real usage never arrived. */
+  usage_complete?: false;
+  /** The HTTP status a vendor answered a failed call with. */
+  error_status?: number;
+  /** The Node/undici code of a failed connection (ECONNRESET, ENOTFOUND, ...). */
+  error_code?: string;
+  /** The nested `codex exec` thread a codex-cli dispatch ran in. */
+  codex_thread_id?: string;
+  /**
+   * The adapter's usual source, set only when it is not `vendor`. `modeled`
+   * marks a seat adapter (codex-cli): its `estimated` rows are seat floors,
+   * not metered spend.
+   */
+  adapter_provenance?: CostProvenance;
 }
+
+export type CostProvenance = "vendor" | "estimated" | "modeled";
+
+/** `transient`: the previous attempt failed with no answer, a 408, 409, 429 or 5xx, and the same request was sent again. */
+export type RetryReason = "output_cap" | "transient" | "validation" | "escalation";
+
+export type PriceBasis = "list" | "custom";
+export type PriceTierLabel = "standard" | "long_context" | "unverified";
 
 /** One attempt from the output-cap doubling loop. */
 export interface AttemptRecord {
@@ -130,6 +169,20 @@ export interface AttemptRecord {
   latency_ms: number;
   success: boolean;
   error?: string;
+  price_basis?: PriceBasis;
+  price_tier?: PriceTierLabel;
+  price_verified?: string | null;
+  prompt_tokens?: number;
+  /** Where this attempt's cost came from; unset means the adapter's usual source. */
+  cost_provenance?: CostProvenance;
+  usage_complete?: false;
+  error_status?: number;
+  error_code?: string;
+  /** From a google.rpc.RetryInfo in the vendor's error body. */
+  retry_after_ms?: number;
+  codex_thread_id?: string;
+  /** Why this attempt was made; unset on a later attempt means an output-cap doubling. */
+  retry_reason?: RetryReason;
 }
 
 export interface ModelPricing {
@@ -154,8 +207,12 @@ export interface ModelConfig {
   adapter: string;
   model_name: string;
   display_name?: string;
-  pricing: ModelPricing;
+  /** Documentation unless `pricing_override` is true; the dated list in prices.ts is the price. */
+  pricing?: ModelPricing;
+  /** Bill `pricing` instead of the dated list, reported as a custom price. Needs a block. */
+  pricing_override?: boolean;
   pricing_source?: string;
+  pricing_last_verified?: string;
   auth?: { env: string };
   endpoint?: string;
   reasoning?: ReasoningConfig;
@@ -168,8 +225,9 @@ export interface ModelConfig {
    */
   region?: string;
   /**
-   * Deadline for an agent-worker delegation. Read only by adapters that spawn
-   * a worker; ignored by completion adapters.
+   * Deadline for one dispatch: an agent-worker delegation, a codex-cli call,
+   * or a completion adapter's whole output-cap doubling chain. It has to stay
+   * below the driver client's per-call timeout (driverClient.ts).
    */
   worker_timeout_sec?: number;
 }
@@ -185,6 +243,13 @@ export interface RunContext {
   work_dir?: string;
   /** Delegation evidence lands beside this path. */
   telemetry_path?: string;
+  /**
+   * Called with each attempt as soon as it returns, so a dispatch the client
+   * stops waiting for still has its finished, billed attempts on record.
+   */
+  onAttempt?: (attempt: AttemptRecord) => void;
+  /** Aborted when the client stops waiting: adapters stop their requests and kill their children. */
+  signal?: AbortSignal;
 }
 
 export type RuleMatcher = {
@@ -223,6 +288,25 @@ export interface Policy {
   rules: Rule[];
   /** Optional; absent from policies written before slots existed. */
   select?: Record<string, SelectSlot>;
+  /** Absent means no cap. Enforced per run against `telemetry_path` — see costCap.ts. */
+  hard_cost_cap_usd?: number;
+  /**
+   * The conductor's pin: the model `codex exec` runs as. Never dispatched
+   * through the bridge, so it is not a `models[]` entry (preflight would
+   * otherwise demand its credential). The bridge validates it and ignores it.
+   */
+  driver?: DriverPin;
+}
+
+export interface DriverPin {
+  model_name: string;
+  reasoning: { effort: string };
+  /** Documentation unless `pricing_override` is true; the conductor is priced from the dated list in prices.ts. */
+  pricing?: ModelPricing;
+  /** Bill `pricing` instead of the dated list, reported as a custom price. Needs a block. */
+  pricing_override?: boolean;
+  pricing_source?: string;
+  pricing_last_verified?: string;
 }
 
 export interface RoutingDecision {
@@ -243,18 +327,11 @@ export interface ExecutionResult {
   };
   cost_usd: number;
   /**
-   * Where THIS result's cost came from, when it differs from the adapter's
-   * usual source. `ModelAdapter.costProvenance` describes an adapter's normal
-   * case; this overrides it per call.
-   *
-   * It exists because an adapter that normally reports real vendor usage can
-   * still fail to get it on a given call — a response with no `usage` block,
-   * a failure path priced from `estimateTokens`. Without a per-result field,
-   * those counts get stamped `vendor` from the adapter's static declaration,
-   * which publishes a calculation as a bill. That is precisely what the
-   * provenance taxonomy exists to prevent.
+   * Summary for readers of the MCP result: `estimated` when any attempt was.
+   * Telemetry is stamped from each attempt's own `cost_provenance`, and falls
+   * back to this only when no attempt carries one.
    */
-  cost_provenance?: "vendor" | "estimated" | "modeled";
+  cost_provenance?: CostProvenance;
   latency_ms: number;
   cache_hit: boolean;
   success: boolean;

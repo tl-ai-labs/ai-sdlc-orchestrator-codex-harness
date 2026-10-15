@@ -10,6 +10,7 @@ import type {
   ExecutionResult,
   ModelConfig,
   ModelPricing,
+  RunContext,
   TaskPacket,
 } from "../types.js";
 import { computeCostUsd, estimateTokens } from "../pricing.js";
@@ -22,6 +23,10 @@ import {
   type GeminiTransport,
   type GenerateOutcome,
 } from "./geminiTransports.js";
+import { DispatchPricer, priceFields, refusedResult, type Clock } from "./dispatchPricer.js";
+import { answeredWithError, describeVendorFailure, neverSent } from "./vendorFailure.js";
+import { dispatchTimeoutMs, startDeadline, type Deadline } from "./deadline.js";
+import type { Priced } from "../prices.js";
 
 // Fallback when the policy YAML omits max_output_tokens_absolute. 8192 is
 // the current Gemini 3.5 Flash ceiling.
@@ -32,31 +37,59 @@ const MAX_DOUBLINGS = 3;
 // One hour comfortably covers a full pass.
 const CACHE_TTL_SECONDS = 3600;
 
+export interface GeminiFlashOptions {
+  clock?: Clock;
+  /** A test stub; otherwise the door is picked from credentials. */
+  transport?: GeminiTransport;
+}
+
 export class GeminiFlashAdapter implements ModelAdapter {
   readonly id: string;
   readonly modelConfig: ModelConfig;
   private transport: GeminiTransport;
   /** Which door was picked — surfaced in errors and setup logs. */
   readonly backendChoice: BackendChoice;
-  /** Policy pricing adjusted for a pinned Vertex region. Cost reports read from here. */
-  readonly billedPricing: ModelPricing;
+  private readonly pricer: DispatchPricer;
   private cachingAvailable = true;
   private cacheNamesByKey = new Map<string, string>(); // cacheContext -> cachedContentName
   private cacheHeader = ""; // the stable text we cache (set once via primeCache)
 
-  constructor(config: ModelConfig) {
+  constructor(config: ModelConfig, options: GeminiFlashOptions = {}) {
     this.id = config.id;
     this.modelConfig = config;
-    // Throws at construction (before any premium spend) if neither door works.
-    const { transport, choice } = buildGeminiTransport(config.auth?.env ?? "GEMINI_API_KEY");
-    this.transport = transport;
-    this.backendChoice = choice;
-    // Resolve the +10% regional surcharge once, here — never at call sites.
-    this.billedPricing = applyVertexSurcharge(config.pricing, {
-      backend: choice.backend,
-      location: transport.location,
-      modelName: config.model_name,
+    if (options.transport) {
+      this.transport = options.transport;
+      this.backendChoice = { backend: options.transport.backend, reason: "injected transport" };
+    } else {
+      // Throws at construction (before any premium spend) if neither door works.
+      const { transport, choice } = buildGeminiTransport(config.auth?.env ?? "GEMINI_API_KEY");
+      this.transport = transport;
+      this.backendChoice = choice;
+    }
+    this.pricer = new DispatchPricer(config, options.clock);
+  }
+
+  /**
+   * The card a dispatch on `date` bills, with the +10% regional surcharge for
+   * the resolved endpoint. Priced per dispatch, never at construction: the
+   * bridge keeps adapters for its whole life, and a list entry can end while
+   * it runs.
+   */
+  pricingOn(date: Date = this.pricer.now()): { unpriced: true; reason: string } | { unpriced: false; price: Priced; billed: ModelPricing } {
+    const price = this.pricer.price(date);
+    if (price.unpriced) return { unpriced: true, reason: price.reason };
+    const billed = applyVertexSurcharge(price.pricing, {
+      backend: this.transport.backend,
+      location: this.transport.location,
+      modelName: this.modelConfig.model_name,
     });
+    return { unpriced: false, price, billed };
+  }
+
+  /** The billed card for a dispatch now; undefined when nothing prices the model today. */
+  get billedPricing(): ModelPricing | undefined {
+    const r = this.pricingOn();
+    return r.unpriced ? undefined : r.billed;
   }
 
   /**
@@ -86,7 +119,21 @@ export class GeminiFlashAdapter implements ModelAdapter {
     }
   }
 
-  async execute(packet: TaskPacket, cacheContext?: string): Promise<ExecutionResult> {
+  async execute(packet: TaskPacket, cacheContext?: string, runContext?: RunContext): Promise<ExecutionResult> {
+    const deadline = startDeadline(dispatchTimeoutMs(this.modelConfig), runContext?.signal);
+    try {
+      return await this.dispatch(packet, deadline, cacheContext, runContext);
+    } finally {
+      deadline.clear();
+    }
+  }
+
+  private async dispatch(
+    packet: TaskPacket,
+    deadline: Deadline,
+    cacheContext?: string,
+    runContext?: RunContext,
+  ): Promise<ExecutionResult> {
     const cacheName = cacheContext ? this.cacheNamesByKey.get(cacheContext) : undefined;
     const cacheHit = !!cacheName;
     const userPrompt = buildUserPrompt(packet, !cacheHit ? this.cacheHeader : "");
@@ -99,10 +146,19 @@ export class GeminiFlashAdapter implements ModelAdapter {
     const wantsJson = packet.outputSchema && !(packet.outputSchema as any).__free_text__;
 
     const attempts: AttemptRecord[] = [];
-    // Set when any attempt has to price tokens the vendor did not report.
-    // Carried to finalizeResult so the result is labelled `estimated`.
+    const record = (attempt: AttemptRecord) => {
+      attempts.push(attempt);
+      runContext?.onAttempt?.(attempt);
+    };
+    // Any attempt priced from tokens the vendor did not report; summarised on the result.
     let usedEstimate = false;
     let ceiling = Math.min(packet.budget.maxOutputTokens, absoluteCeiling);
+
+    const dispatchDate = this.pricer.now();
+    const priced = this.pricingOn(dispatchDate);
+    if (priced.unpriced) return refusedResult(this.modelConfig, dispatchDate, priced.reason, ceiling);
+    const { billed } = priced;
+    const priceTags = priceFields(priced.price);
 
     for (let attemptNumber = 1; attemptNumber <= MAX_DOUBLINGS + 1; attemptNumber++) {
       const attemptStart = Date.now();
@@ -120,20 +176,36 @@ export class GeminiFlashAdapter implements ModelAdapter {
           prompt: userPrompt,
           generationConfig,
           cachedContentName: cacheName,
+          abortSignal: deadline.signal,
         });
       } catch (err: any) {
-        const failTokens = { input: estimateTokens(userPrompt), input_cached: 0, output: 0 };
-        attempts.push({
+        const failure = describeVendorFailure(err);
+        // Google bills only a request it answered with 200. Vertex AI: "Requests returning any
+        // other response codes, such as 4xx and 5xx codes, aren't charged for the input or
+        // output" (https://cloud.google.com/vertex-ai/generative-ai/pricing). The Gemini API: "If
+        // your request fails with a 400 or 500 error, you won't be charged for the tokens used"
+        // (https://ai.google.dev/gemini-api/docs/billing). A connection lost with no answer may
+        // still have been served, so it keeps the prompt as an estimate.
+        const unbilled = answeredWithError(failure) || neverSent(failure);
+        const failTokens = unbilled
+          ? { input: 0, input_cached: 0, output: 0 }
+          : { input: estimateTokens(userPrompt), input_cached: 0, output: 0 };
+        record({
           attempt_number: attemptNumber,
           ceiling_used: ceiling,
           hit_output_cap: false,
           tokens: failTokens,
-          cost_usd: computeCostUsd(failTokens, this.billedPricing),
+          cost_usd: computeCostUsd(failTokens, billed),
           latency_ms: Date.now() - attemptStart,
           success: false,
-          error: err?.message ?? String(err),
+          error: deadline.expired
+            ? `dispatch deadline of ${dispatchTimeoutMs(this.modelConfig) / 1000}s reached (the leaf's worker_timeout_sec): ${err?.message ?? err}`
+            : (err?.message ?? String(err)),
+          ...failure,
+          ...priceTags,
+          ...(unbilled ? {} : { cost_provenance: "estimated" as const, usage_complete: false as const }),
         });
-        return this.finalizeResult(attempts, null, cacheHit, "vendor_error", true);
+        return this.finalizeResult(attempts, null, cacheHit, "vendor_error", usedEstimate || !unbilled);
       }
 
       const text = outcome.text;
@@ -144,14 +216,16 @@ export class GeminiFlashAdapter implements ModelAdapter {
       // Without this, cached tokens are billed twice.
       const cachedTokens =
         usage.cachedContentTokenCount ?? (cacheHit ? estimateTokens(this.cacheHeader) : 0);
-      if (usage.cachedContentTokenCount === undefined && cacheHit) usedEstimate = true;
       const promptTokens = usage.promptTokenCount ?? estimateTokens(userPrompt);
-      if (usage.promptTokenCount === undefined) usedEstimate = true;
       // Output = candidates + thoughts (see billedOutputTokens). Estimate
       // stands in only when the vendor sent no usage block at all.
       const missingOutputUsage =
         usage.candidatesTokenCount === undefined && usage.thoughtsTokenCount === undefined;
-      if (missingOutputUsage) usedEstimate = true;
+      const attemptEstimated =
+        (usage.cachedContentTokenCount === undefined && cacheHit) ||
+        usage.promptTokenCount === undefined ||
+        missingOutputUsage;
+      if (attemptEstimated) usedEstimate = true;
       const outputTokens = missingOutputUsage ? estimateTokens(text) : billedOutputTokens(usage);
       const attemptTokens = {
         input: Math.max(0, promptTokens - cachedTokens),
@@ -164,15 +238,17 @@ export class GeminiFlashAdapter implements ModelAdapter {
       const finishReason = outcome.finishReason;
       const hitOutputCap = finishReason === "MAX_TOKENS";
 
-      attempts.push({
+      record({
         attempt_number: attemptNumber,
         ceiling_used: ceiling,
         stop_reason: finishReason,
         hit_output_cap: hitOutputCap,
         tokens: attemptTokens,
-        cost_usd: computeCostUsd(attemptTokens, this.billedPricing),
+        cost_usd: computeCostUsd(attemptTokens, billed),
         latency_ms: Date.now() - attemptStart,
         success: !hitOutputCap,
+        ...priceTags,
+        ...(attemptEstimated ? { cost_provenance: "estimated" as const } : {}),
       });
 
       if (!hitOutputCap) {
@@ -214,12 +290,7 @@ export class GeminiFlashAdapter implements ModelAdapter {
       | "output_cap_doubling_budget_exhausted"
       | "output_cap_at_model_absolute"
       | "vendor_error",
-    /**
-     * True when any attempt priced tokens from `estimateTokens` because the
-     * vendor sent no usage for them. The result must then say `estimated`,
-     * or server.ts falls back to this adapter's default of vendor-metered
-     * and publishes a guess as a measured bill.
-     */
+    /** True when any attempt priced tokens from `estimateTokens`; see ExecutionResult.cost_provenance. */
     usedEstimate = false,
   ): ExecutionResult {
     const totalTokens = attempts.reduce(

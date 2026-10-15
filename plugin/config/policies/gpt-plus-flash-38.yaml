@@ -1,0 +1,164 @@
+# gpt-plus-flash with the mechanical tier on Gemini 3.8 Flash. Routing, select
+# slots, judgment tier, cost cap and rates are identical; only the Gemini
+# model_name differs. Google deprecated gemini-3.7-flash on 2026-10-08 and
+# routes requests for it to gemini-3.8-flash, so this policy names the model
+# that actually runs. Selectable alongside the other gpt-* policies.
+version: 1
+name: gpt-plus-flash-38
+
+# The conductor's pin: run.mjs passes -m and the effort from here to codex exec,
+# and start-run.mjs starts no run in a codex session on another model or effort.
+# Its modeled cost is priced from the dated price list (src/prices.ts); the
+# pricing block below documents that rate, and a test holds it to the list.
+# Not a models[] entry, because it is never dispatched and preflight would
+# demand its credential. The same in every runnable policy, so a comparison
+# between policies holds it constant.
+driver:
+  model_name: gpt-5.6-terra
+  reasoning: { effort: high }
+  pricing: { input: 2.00, input_cached: 0.20, output: 12.00 }
+  pricing_source: https://platform.openai.com/docs/pricing
+  pricing_last_verified: 2026-10-13
+
+models:
+  - id: gpt
+    adapter: openai
+    model_name: gpt-5.6-terra
+    # The judgment worker's effort. The conductor's pin is `driver:` above.
+    reasoning: { effort: high }
+    # Verified 2026-10-13 against OpenAI's pricing page: 2.00 / 0.20 / 12.00 per 1M.
+    # A request over 272,000 input tokens bills 4.00 / 0.40 / 18.00 (src/prices.ts).
+    pricing: { input: 2.00, input_cached: 0.20, output: 12.00 }
+    pricing_source: https://platform.openai.com/docs/pricing
+    pricing_last_verified: 2026-10-13
+    auth: { env: OPENAI_API_KEY }
+    # TODO(ceiling): no published absolute output-token ceiling confirmed for
+    # gpt-5.6-terra as of this port. 32000 is a placeholder carried over from
+    # the Claude harness's judgment tier, not a researched GPT-5.6 figure —
+    # confirm before P5 and correct here.
+    max_output_tokens_absolute: 32000
+
+  # Gemini 3.8 Flash as a MODEL. One completion call per packet.
+  - id: flash-completion
+    adapter: mcp:model-dispatch
+    model_name: gemini-3.8-flash
+    display_name: gemini-3.8-flash
+    # Flat global/AI-Studio rates. Vertex adds +10% on every token class for
+    # REGIONAL endpoints (Gemini 3+, effective 2026-07-01). Do not hand-edit a
+    # x1.10 in — geminiTransports.ts::applyVertexSurcharge does it at dispatch.
+    # Introductory rate through 2026-12-31. The price list (src/prices.ts) bills
+    # 1.50 / 0.15 / 7.50 from 2027-01-01; update this documentation block then.
+    pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
+    pricing_last_verified: 2026-10-12
+    # AI Studio door. Unset → adapter falls through to Vertex ADC, same rates.
+    auth: { env: GEMINI_API_KEY }
+    max_output_tokens_absolute: 8192
+
+  # The SAME model reached as an AGENT (Antigravity SDK session with tools and
+  # a working directory). Same rates; several times more tokens per packet
+  # because the SDK re-sends the conversation on every turn plus a ~11.5k-token
+  # identity preamble.
+  - id: flash-agsdk-worker
+    adapter: antigravity-worker
+    model_name: gemini-3.8-flash
+    display_name: gemini-3.8-flash (Antigravity agent)
+    pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
+    pricing_last_verified: 2026-10-12
+    # `region:` deliberately unpinned so this leaf follows GOOGLE_CLOUD_LOCATION
+    # and hits the flat global endpoint by default, same as flash-completion.
+    # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so
+    # no `auth:` block.
+    # 9-minute deadline, then the worker's process group is killed.
+    worker_timeout_sec: 540
+    # No max_output_tokens_absolute: the doubling loop only makes sense when WE
+    # chose the ceiling. An agent session sets its own per-turn limits.
+
+# Logical slots. A rule names the slot; the run picks one option, or gets
+# `default`. The run's choice arrives in MMO_SELECT, spelled `slot=option`
+# (comma-separated for more than one), written by the setup flow.
+select:
+  gemini-flash:
+    default: flash-completion
+    options:
+      - flash-completion
+      - flash-agsdk-worker
+    reason: "How the mechanical tier reaches Gemini 3.8: one completion call (cheap, predictable) or an agent session with tools and a workspace (costlier per packet, does its own reading and editing)."
+
+rules:
+  - when: { phase: requirements_analysis }
+    use: gpt
+    reason: "Judgment-heavy, low volume"
+  - when: { phase: architecture_design }
+    use: gpt
+    reason: "Foundational, decision-bearing"
+  - when: { phase: plan_task_packets }
+    use: gpt
+    reason: "Needs full context to slice work cleanly"
+  - when: { phase: senior_code_review }
+    use: gpt
+    reason: "Cross-file reasoning + judgment"
+  - when: { phase: security_review }
+    use: gpt
+    reason: "Risk-bearing, low volume"
+
+  # Brownfield-mode phases — both premium.
+  - when: { phase: discovery }
+    use: gpt
+    reason: "Judgment: understanding an unknown repo is high-stakes"
+  - when: { phase: change_plan }
+    use: gpt
+    reason: "Judgment: delta design for feature-extend / refactor / deps"
+
+  # A refined packet escalates after 2 failed mechanical-tier attempts, the
+  # retry rule pipeline/SKILL.md gives the conductor. Before the mechanical
+  # rules, which would otherwise match first.
+  - when: { phase: [codegen, tests, docs], retry_count: { gte: 2 } }
+    use: gpt
+    reason: "Escalation: 2 mechanical-tier attempts failed"
+
+  - when:
+      phase: codegen
+      task_type:
+        - controller_handler
+        - service_method
+        - dto
+        - module_wiring
+        - migration
+        - seed_data
+        - entity
+        - guard
+        - interceptor
+        - filter
+        - react_component
+        - react_page
+        - api_client
+        - frontend_util
+        - frontend_config
+        - frontend_html
+    use: gemini-flash
+    reason: "Schema-driven boilerplate"
+  - when: { phase: tests }
+    use: gemini-flash
+    reason: "Scaffold-heavy, pattern-based"
+  - when: { phase: docs }
+    use: gemini-flash
+    reason: "Volume work"
+
+  # Escalate to GPT after 2 mechanical-tier retries.
+  - when: { phase: debug, retry_count: { gte: 2 } }
+    use: gpt
+    reason: "Escalation: 2 mechanical-tier attempts failed"
+  - when: { phase: debug }
+    use: gemini-flash
+    reason: "Most debugs have clear cause"
+
+  - default: gpt
+    reason: "Unrecognized task — fail safe to premium"
+
+# Hard per-run cost cap. Once the dispatched cost in the run's
+# telemetry.jsonl plus the conductor's modeled cost reaches this, the
+# bridge refuses every further dispatch and run.mjs stops resuming.
+# Prevents runaway spend on an unexpectedly large repo.
+hard_cost_cap_usd: 50

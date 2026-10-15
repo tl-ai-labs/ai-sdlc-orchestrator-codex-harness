@@ -555,6 +555,18 @@ test("the next-steps banner teaches codex's mention syntax, not Claude's slash c
   assert.match(banner, /\$mmo-codex:pass/);
 });
 
+test("the next-steps banner names a routing-policy.yaml that overrides the default", () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-banner-override-"));
+  mkdirSync(join(root, ".sdlc"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "project.json"), JSON.stringify({ default_policy: SEAT_POLICY }));
+  assert.doesNotMatch(nextStepsBanner(root, true), /routing-policy\.yaml/);
+  writeFileSync(join(root, "routing-policy.yaml"), "version: 1\nname: team-metered\n");
+  const banner = nextStepsBanner(root, true);
+  assert.match(banner, new RegExp(`Current policy: ${SEAT_POLICY}`));
+  assert.match(banner, /Runs here use routing-policy\.yaml \(policy 'team-metered'\), which overrides default_policy and --policy\./);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("linkSkills repairs a link left dangling by a plugin update", () => {
   // The realistic broken state: --fix linked the skills, then a plugin update
   // moved or deleted the directory they point into. skillLinkState correctly
@@ -671,11 +683,66 @@ test("a policy name with no file behind it is 'unknown', not 'needs no key'", ()
   rmSync(root, { recursive: true, force: true });
 });
 
-test("a malformed project.json falls back to the default instead of throwing", () => {
+test("a routing-policy.yaml at the project root beats project.json, as it does for a run", () => {
+  const root = mkdtempSync(join(tmpdir(), "override-project-"));
+  mkdirSync(join(root, ".sdlc"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "project.json"), JSON.stringify({ default_policy: "gpt-plus-flash" }));
+  writeFileSync(
+    join(root, "routing-policy.yaml"),
+    readFileSync(join(SHIPPED_PLUGIN_ROOT, "config", "policies", SEAT_POLICY + ".yaml"), "utf8").replace(/^name: .*$/m, "name: team-seat"),
+  );
+
+  const state = observePolicy(SHIPPED_PLUGIN_ROOT, root);
+  assert.equal(state.name, "team-seat");
+  assert.equal(state.source, "project-override");
+  assert.equal(state.path, join(root, "routing-policy.yaml"));
+  assert.equal(state.usesOpenAiKey, false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a malformed project.json is reported as the file a run refuses, not as the default", () => {
   const root = mkdtempSync(join(tmpdir(), "bad-json-"));
   mkdirSync(join(root, ".sdlc"), { recursive: true });
   writeFileSync(join(root, ".sdlc", "project.json"), "{ not json");
 
-  assert.equal(observePolicy(SHIPPED_PLUGIN_ROOT, root).name, DEFAULT_POLICY);
+  const state = observePolicy(SHIPPED_PLUGIN_ROOT, root);
+  assert.equal(state.source, "invalid-project-json");
+  assert.equal(state.name, null);
+  assert.equal(state.path, join(root, ".sdlc", "project.json"));
+  assert.equal(state.usesOpenAiKey, null);
+  assert.match(state.error, /is not valid JSON: .*Fix or delete the file\./);
   rmSync(root, { recursive: true, force: true });
+});
+
+test("an unrendered {{POLICY}} or a non-string default_policy is reported the same way", () => {
+  for (const [value, pattern] of [
+    ["{{POLICY}}", /unrendered \{\{PLACEHOLDER\}\}/],
+    [7, /default_policy must be a policy name \(a string\), got 7/],
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), "bad-default-"));
+    mkdirSync(join(root, ".sdlc"), { recursive: true });
+    writeFileSync(join(root, ".sdlc", "project.json"), JSON.stringify({ default_policy: value }));
+    const state = observePolicy(SHIPPED_PLUGIN_ROOT, root);
+    assert.equal(state.source, "invalid-project-json", String(value));
+    assert.match(state.error, pattern);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("evaluate: an invalid project.json blocks and names the file", () => {
+  const policy = {
+    name: null, selected: true, source: "invalid-project-json", path: "/p/.sdlc/project.json",
+    usesOpenAiKey: null, error: "/p/.sdlc/project.json is not valid JSON: x. Fix or delete the file.",
+  };
+  const state = evaluate({ ...HEALTHY, policy });
+  const p = state.problems.find((p) => p.id === "project-json-invalid");
+  assert.equal(p.severity, "blocking");
+  assert.match(p.message, /\/p\/\.sdlc\/project\.json is not valid JSON/);
+  assert.match(p.fix, /\/p\/\.sdlc\/project\.json/);
+  assert.equal(state.ok, false);
+
+  const noKey = evaluate({ ...HEALTHY, env: { GEMINI_API_KEY: "g-x" }, policy });
+  const key = noKey.problems.find((p) => p.id === "openai-key");
+  assert.equal(key.severity, "warning");
+  assert.match(key.message, /could not be determined, because \/p\/\.sdlc\/project\.json is invalid/);
 });

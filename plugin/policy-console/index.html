@@ -113,6 +113,7 @@
     .valid-banner { padding: 12px 16px; border-radius: var(--radius-sm); font-size: 13px; }
     .valid-banner.ok { background: var(--success-bg); color: var(--success-fg); }
     .valid-banner.err { background: var(--danger-bg); color: var(--danger-fg); }
+    .valid-banner.warn { background: var(--warn-bg); color: var(--warn-fg); margin-top: 8px; }
     .valid-banner ul { margin: 4px 0 0; padding-left: 20px; }
     .output { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-1); overflow: hidden; }
     .output-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
@@ -196,7 +197,7 @@
         <span class="swatch"></span>
         <div>
           <h2>Routing &amp; thinking capacity — per phase</h2>
-          <p>The thinking picker sits next to each model and shows that model's own real range — Gemini's named levels via <span class="mono">reasoning.tier</span>, Opus's effort levels via <span class="mono">reasoning.effort</span>. This is what every intent uses unless the table below overrides a cell.</p>
+          <p>The thinking picker sits next to each model and shows that model's own real range — Gemini's named levels via <span class="mono">reasoning.tier</span>. A GPT model's effort is set once on its model entry (<span class="mono">reasoning.effort</span>), so its phases show Not available. This is what every intent uses unless the table below overrides a cell.</p>
         </div>
       </div>
       <div id="phase-rows" class="rows"></div>
@@ -214,6 +215,7 @@
     </section>
 
     <div id="validation-banner"></div>
+    <div id="price-warnings"></div>
 
     <div class="output">
       <div class="output-head">
@@ -228,22 +230,20 @@
 <script>
 // ── constants (mirror policy-server.mjs) ──────────────────────
 
-const TIER_LABEL = { off: "off", minimal: "min", low: "low", medium: "med", high: "high", xhigh: "xh", max: "max" };
+const TIER_LABEL = { off: "off", minimal: "min", low: "low", medium: "med", high: "high" };
 const GEMINI_TIERS = ["off", "minimal", "low", "medium", "high"];
-const ANTHROPIC_EFFORT_TIERS = ["off", "low", "medium", "high", "xhigh", "max"];
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 function thinkingSupport(model) {
   if (!model) return [];
   if (model.adapter === "mcp:model-dispatch" || model.adapter === "antigravity-worker") return GEMINI_TIERS;
-  if (model.adapter === "builtin-anthropic" || model.adapter === "claude-cli") return ANTHROPIC_EFFORT_TIERS;
   return [];
 }
 
 function defaultAuthEnv(adapter) {
-  // claude-cli reads OAuth from the local `claude` binary — no env var to name.
-  if (adapter === "claude-cli") return "";
-  return adapter === "builtin-anthropic" ? "ANTHROPIC_API_KEY" : "GEMINI_API_KEY";
+  // codex-cli runs on the codex CLI's own seat login — no env var to name.
+  if (adapter === "codex-cli") return "";
+  return adapter === "openai" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
 }
 
 // ── state ──────────────────────────────────────────────────────
@@ -297,9 +297,9 @@ function renderGallery() {
     `;
     g.appendChild(c);
   }
-  // Default the "add new" base to opus-plus-flash if present, otherwise the
+  // Default the "add new" base to gpt-plus-flash if present, otherwise the
   // first shipped preset, otherwise the first policy on disk.
-  const defaultBase = allPolicies.find((p) => p.id === "opus-plus-flash")
+  const defaultBase = allPolicies.find((p) => p.id === "gpt-plus-flash")
     ?? allPolicies.find((p) => p.origin === "preset")
     ?? allPolicies[0];
   if (defaultBase) {
@@ -554,7 +554,7 @@ function addModel() {
   }
 
   const model = { id, adapter, model_name, pricing: { input, input_cached, output } };
-  // claude-cli has no env var — omit auth entirely so the YAML doesn't carry
+  // codex-cli has no env var — omit auth entirely so the YAML doesn't carry
   // a misleading empty key.
   if (authEnv) model.auth = { env: authEnv };
   editorState.models.push(model);
@@ -623,6 +623,14 @@ async function refreshPreview() {
   });
   const data = await r.json();
   document.getElementById("output-yaml").textContent = data.ok ? data.yaml : "(preview blocked: " + (data.errors ?? []).join("; ") + ")";
+  renderPriceWarnings(data.warnings);
+}
+
+function renderPriceWarnings(warnings) {
+  const el = document.getElementById("price-warnings");
+  el.innerHTML = warnings?.length
+    ? `<div class="valid-banner warn"><strong>Billed at the price list, not the rates entered here</strong><ul>${warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("")}</ul></div>`
+    : "";
 }
 
 async function doSave() {
@@ -640,6 +648,7 @@ async function doSave() {
   });
   const data = await r.json();
   const banner = document.getElementById("validation-banner");
+  renderPriceWarnings(data.warnings);
   if (data.ok) {
     banner.innerHTML = `<div class="valid-banner ok"><strong>Saved.</strong> ${escapeHtml(data.path)} written. <button class="btn ghost" onclick="showGallery()">View in Policies →</button></div>`;
   } else {

@@ -187,7 +187,7 @@ test("mmo-log.mjs falls back to .sdlc/local/debug.log when there is no run yet",
     const r = spawnSync(
       "node",
       [join(ROOT, "plugin", "scripts", "mmo-log.mjs"),
-        "--event=policy.load", "--level=info", "--policy-name=opus-plus-flash",
+        "--event=policy.load", "--level=info", "--policy-name=gpt-plus-flash",
         `--project-root=${dir}`],
       { encoding: "utf8" },
     );

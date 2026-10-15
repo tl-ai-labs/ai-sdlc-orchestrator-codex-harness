@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a1340d-41da-7e31-84cd-b0907e9bc31f"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `mock-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"reply 3"}}
+{"type":"turn.completed","usage":{"input_tokens":9000,"cached_input_tokens":3100,"cache_write_input_tokens":0,"output_tokens":210,"reasoning_output_tokens":60}}

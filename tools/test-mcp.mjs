@@ -2,10 +2,10 @@
 /**
  * Chains the bundled MCP server's test suite into the root `npm test`.
  *
- * Root suite has no dependencies (a fresh clone can run it). Server tests
- * need TypeScript compilation → require the server's deps installed. Runs
- * the server suite when possible; when not, says so loudly. Never passes
- * silently — that would report green while a whole package went untested.
+ * The root suite needs root `npm ci` (yaml) and the server built once
+ * (driver.test imports run.mjs, which imports the server's dist/). The
+ * server suite needs the server's own dependencies. When they are missing
+ * it says so loudly instead of passing silently.
  */
 
 import { spawnSync } from "node:child_process";
@@ -20,7 +20,7 @@ if (!existsSync(join(SERVER_DIR, "node_modules"))) {
   console.log(
     "\n! MCP server tests NOT RUN — plugin/mcp/model-dispatch has no installed\n" +
       "  dependencies, so its TypeScript cannot be compiled. Everything above passed.\n" +
-      "  To include them:  npm run verify -- --fix   (then re-run npm test)\n",
+      "  To include them:  node plugin/codex/verify-setup.mjs --fix   (then re-run npm test)\n",
   );
   process.exit(0);
 }

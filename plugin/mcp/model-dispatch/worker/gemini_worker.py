@@ -13,9 +13,12 @@ Contract:
                      GOOGLE_CLOUD_LOCATION (see LOCATION precedence below).
   --workdir PATH     the only directory the worker may act in
   --out-dir PATH     usage sidecar + SDK save dir
-  --usage-file PATH  sidecar this worker WRITES (see _project_tool_call for shape)
+  --usage-file PATH  sidecar this worker WRITES for every session that started,
+                     with status ok|timeout|error (see _project_tool_call for shape)
   --thinking LEVEL   HIGH|MEDIUM|LOW|NONE
   --timeout SECONDS  hard cap on resolve() (default 540)
+
+Exit 0 with the reply on stdout; exit 1 when the session failed or never started.
 
 Cost is NOT computed here. Token counts are recorded raw; dollars applied by
 the server against the policy leaf's rates.
@@ -165,17 +168,51 @@ async def run(args):
     )
 
     text, usage, tool_calls, tool_calls_truncated = "", None, [], False
-    async with ag.Agent(cfg) as agent:
-        resp = await _maybe(agent.chat(task))
-        await asyncio.wait_for(_maybe(resp.resolve()), timeout=args.timeout)
-        try:
-            text = await _maybe(resp.text())
-        except Exception as e:  # never lose usage over a text error
-            text = f"<worker text() error: {type(e).__name__}: {e}>"
-        tool_calls, tool_calls_truncated = await _drain(resp.tool_calls)
-        u = await _maybe(resp.usage_metadata)
-        usage = u.model_dump() if hasattr(u, "model_dump") else (dict(u) if u else None)
+    status, error_type, error, usage_source, usage_error = "ok", None, None, None, None
+    entered, teardown = False, None
+    try:
+        async with ag.Agent(cfg) as agent:
+            entered = True
+            resp = None
+            try:
+                resp = await _maybe(agent.chat(task))
+                await asyncio.wait_for(_maybe(resp.resolve()), timeout=args.timeout)
+            except asyncio.TimeoutError:
+                status, error_type = "timeout", "TimeoutError"
+                error = f"the session did not finish within {args.timeout}s"
+            except Exception as e:
+                status, error_type, error = "error", type(e).__name__, f"{type(e).__name__}: {e}"
+            if status == "ok":
+                try:
+                    text = await _maybe(resp.text())
+                except Exception as e:  # never lose usage over a text error
+                    text = f"<worker text() error: {type(e).__name__}: {e}>"
+                tool_calls, tool_calls_truncated = await _drain(resp.tool_calls)
+                try:
+                    usage = _dump(await _maybe(resp.usage_metadata))
+                    usage_source = "response.usage_metadata" if usage is not None else None
+                except Exception as e:
+                    usage_error = f"{type(e).__name__}: {e}"
+            if usage is None:
+                # A failed session still spent tokens; the conversation keeps its running total.
+                try:
+                    usage = _dump(await _maybe(agent.conversation.total_usage))
+                    usage_source = "conversation.total_usage" if usage is not None else None
+                except Exception as e:
+                    usage_error = f"{type(e).__name__}: {e}"
+    except Exception as e:
+        # The SDK's teardown can raise after a session already spent tokens.
+        if not entered:
+            raise
+        teardown = e
+    if teardown is not None:
+        what = f"the session teardown failed: {type(teardown).__name__}: {teardown}"
+        if status == "ok":
+            status, error_type, error = "error", type(teardown).__name__, what
+        else:
+            error = f"{error}; then {what}"
 
+    # Written for every session that started, failed ones included.
     # cost_usd deliberately absent — priced by the server, never here.
     with open(args.usage_file, "w", encoding="utf-8") as f:
         json.dump({
@@ -185,14 +222,29 @@ async def run(args):
             "sdk_version": SDK_VERSION,
             "vertex_project": PROJECT,
             "vertex_location": location,
+            "status": status,
+            "error_type": error_type,
+            "error": error,
             "usage": usage,
+            "usage_source": usage_source,
+            "usage_error": usage_error,
             "tool_call_count": len(tool_calls),
             "tool_calls_truncated": tool_calls_truncated,
             "tool_calls": [_project_tool_call(tc) for tc in tool_calls],
             "text": text,
         }, f, indent=2)
 
+    if status != "ok":
+        print(f"gemini_worker failed: {error}", file=sys.stderr)
+        return 1
     print(text)  # caller reads the reply on stdout
+    return 0
+
+
+def _dump(u):
+    if hasattr(u, "model_dump"):
+        return u.model_dump()
+    return dict(u) if u else None
 
 
 def main():
@@ -208,10 +260,11 @@ def main():
     p.add_argument("--timeout", type=int, default=540)
     args = p.parse_args()
     try:
-        asyncio.run(run(args))
+        code = asyncio.run(run(args))
     except Exception as e:
         print(f"gemini_worker failed: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

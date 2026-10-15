@@ -3,7 +3,8 @@
  * conductor's dispatch tool (plugin/codex/dispatch.mjs).
  *
  * Everything here is offline and free: the bridge connection is injected,
- * and codex itself is never spawned. What these tests actually protect is
+ * and codex itself is never spawned (driver-lifecycle.test.mjs drives the
+ * whole loop against a stand-in codex). What these tests actually protect is
  * the argv the fairness argument rests on — every pin in
  * docs/verification/p1-codex-runtime.md's "Pins chosen" table has to
  * survive into the real invocation, and two of them (the sandbox network
@@ -12,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,17 +21,21 @@ import { fileURLToPath } from "node:url";
 import {
   buildCodexArgs,
   buildRunArtifacts,
-  loadPolicyFile,
   renderPrompt,
   renderSkills,
   GATE_MODES,
   renderHandover,
   validIntents,
-  runIsComplete,
+  costCapStop,
   threadIdFrom,
   RESUME_PROMPT,
+  resumePrompt,
+  gateAnswerPrompt,
+  questionAnswerPrompt,
+  createLineReader,
   DEFAULT_MAX_TURNS,
   parseArgs as parseRunArgs,
+  main as runMain,
   SANDBOX_MODE,
   APPROVAL_POLICY,
 } from "../../plugin/codex/run.mjs";
@@ -42,6 +47,8 @@ import {
   summarize,
   runDispatch,
 } from "../../plugin/codex/dispatch.mjs";
+import { resolveRunPolicy } from "../../plugin/codex/run-policy.mjs";
+import { pluginHooks, pluginHooksOffConfig, sessionHookConfig } from "../../plugin/codex/hook-wiring.mjs";
 
 function tmp() {
   return mkdtempSync(join(tmpdir(), "driver-test-"));
@@ -51,11 +58,13 @@ function cleanup(dir) {
 }
 
 const PIN = { model: "gpt-5.6-terra", effort: "high" };
+const PLUGIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "plugin");
+const HOOKS_OFF = pluginHooksOffConfig();
 
 // ── run.mjs: the pinned invocation ───────────────────────────────────────
 
 test("buildCodexArgs carries every pin from the verification doc", () => {
-  const argv = buildCodexArgs({ pin: PIN, promptText: "do the thing", hookPath: "/h.mjs" });
+  const argv = buildCodexArgs({ pin: PIN, promptText: "do the thing" });
   assert.ok(argv.includes("--json"), "telemetry capture depends on --json");
   assert.equal(argv[argv.indexOf("-m") + 1], "gpt-5.6-terra");
   assert.ok(argv.includes('model_reasoning_effort="high"'));
@@ -64,7 +73,7 @@ test("buildCodexArgs carries every pin from the verification doc", () => {
 });
 
 test("buildCodexArgs sets the sandbox network flag — without it the bridge subprocess is silently killed", () => {
-  const argv = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h.mjs" });
+  const argv = buildCodexArgs({ pin: PIN, promptText: "x" });
   assert.ok(
     argv.includes("sandbox_workspace_write.network_access=true"),
     "the sandbox finding in the verification doc makes this load-bearing, not optional",
@@ -72,23 +81,38 @@ test("buildCodexArgs sets the sandbox network flag — without it the bridge sub
 });
 
 test("buildCodexArgs puts the prompt last, behind a bare -- separator", () => {
-  const argv = buildCodexArgs({ pin: PIN, promptText: "---\nname: x\n---\nbody", hookPath: "/h.mjs" });
+  const argv = buildCodexArgs({ pin: PIN, promptText: "---\nname: x\n---\nbody" });
   assert.equal(argv[argv.length - 2], "--", "the separator must immediately precede the prompt");
   assert.equal(argv[argv.length - 1], "---\nname: x\n---\nbody");
 });
 
-test("buildCodexArgs registers the write-contract hook on BOTH apply_patch and Bash", () => {
-  const argv = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h.mjs" });
+test("buildCodexArgs wires the plugin's own hook entry for apply_patch and Bash, marked as run.mjs's", () => {
+  const argv = buildCodexArgs({ pin: PIN, promptText: "x" });
   const hookArg = argv.find((a) => typeof a === "string" && a.startsWith("hooks.PreToolUse="));
   assert.ok(hookArg, "a PreToolUse hook config must be present");
-  assert.match(hookArg, /matcher="apply_patch"/, "apply_patch is the model's default edit tool");
-  assert.match(hookArg, /matcher="Bash"/, "Bash covers shell-redirect writes");
+  assert.match(hookArg, /matcher="apply_patch\|Bash"/, "apply_patch is the model's default edit tool; Bash covers shell writes");
+  assert.match(hookArg, /write-contract-check\.mjs\\" --wired-by=run"/);
+  assert.ok(argv.includes("features.hooks=true"), "a person's [features] hooks=false would silence the guard");
+  assert.ok(argv.includes(HOOKS_OFF), "the installed plugin's copy is off, so each call is judged once");
+  assert.ok(argv.includes("--dangerously-bypass-hook-trust"), "session hooks are untrusted, and skipped silently without it");
+  assert.ok(!argv.some((a) => String(a).includes('hooks.state."')), "a dotted quoted key does nothing");
+  for (const flag of ["features.hooks=true", HOOKS_OFF]) assert.equal(argv[argv.indexOf(flag) - 1], "-c", flag);
+  assert.ok(argv.indexOf(HOOKS_OFF) < argv.indexOf("--"));
 });
 
-test("buildCodexArgs quotes a hook path containing spaces — an unquoted one fails OPEN", () => {
-  const argv = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/a b/hook.mjs" });
+test("buildCodexArgs quotes a plugin root containing spaces — an unquoted one fails OPEN", () => {
+  const argv = buildCodexArgs({ pin: PIN, promptText: "x", pluginRoot: PLUGIN_DIR });
   const hookArg = argv.find((a) => typeof a === "string" && a.startsWith("hooks.PreToolUse="));
-  assert.match(hookArg, /command="node '\/a b\/hook\.mjs'"/);
+  assert.equal(hookArg, sessionHookConfig(pluginHooks(PLUGIN_DIR), PLUGIN_DIR));
+  const dir = tmp();
+  try {
+    const root = join(dir, "TL ai labs", "plugin");
+    mkdirSync(join(root, "hooks"), { recursive: true });
+    copyFileSync(join(PLUGIN_DIR, "hooks", "hooks.json"), join(root, "hooks", "hooks.json"));
+    const spaced = buildCodexArgs({ pin: PIN, promptText: "x", pluginRoot: root });
+    const command = `node \\"${root}/codex/hooks/write-contract-check.mjs\\" --wired-by=run`;
+    assert.ok(spaced.some((a) => a.includes(`command="${command}"`)), spaced.join("\n"));
+  } finally { cleanup(dir); }
 });
 
 test("buildCodexArgs grants CODEX_HOME as writable, so a nested codex exec can start", () => {
@@ -98,33 +122,81 @@ test("buildCodexArgs grants CODEX_HOME as writable, so a nested codex exec can s
   // system", and every judgment dispatch fails.
   // Expressed as a config key rather than --add-dir: `codex exec resume`
   // rejects the flag, and both invocations must grant the same root.
-  const argv = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h", codexHome: "/home/u/.codex" });
+  const argv = buildCodexArgs({ pin: PIN, promptText: "x", codexHome: "/home/u/.codex" });
   assert.ok(
     argv.some((a) => typeof a === "string" && a.includes("writable_roots") && a.includes("/home/u/.codex")),
   );
 });
 
+test("buildCodexArgs grants npm's cache as writable, so Phase 7's npm install can run in the sandbox", () => {
+  const argv = buildCodexArgs({ pin: PIN, promptText: "x", codexHome: "/home/u/.codex", npmCache: "/home/u/.npm" });
+  const roots = argv.filter((a) => typeof a === "string" && a.startsWith("sandbox_workspace_write.writable_roots="));
+  assert.deepEqual(roots, ['sandbox_workspace_write.writable_roots=["/home/u/.codex","/home/u/.npm"]']);
+  const resumed = buildCodexArgs({ pin: PIN, promptText: "x", codexHome: "/home/u/.codex", npmCache: "/home/u/.npm", resumeThreadId: "t-1" });
+  assert.ok(resumed.includes(roots[0]), "a resumed turn keeps the same writable roots");
+  const prev = process.env.npm_config_cache;
+  process.env.npm_config_cache = "/srv/npm-cache";
+  try {
+    assert.ok(buildCodexArgs({ pin: PIN, promptText: "x", codexHome: "/home/u/.codex" }).some((a) => a.includes('"/srv/npm-cache"')));
+  } finally {
+    if (prev === undefined) delete process.env.npm_config_cache;
+    else process.env.npm_config_cache = prev;
+  }
+});
+
 test("buildCodexArgs passes -C only when a cwd is given", () => {
-  assert.ok(!buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h" }).includes("-C"));
-  const withCwd = buildCodexArgs({ pin: PIN, promptText: "x", hookPath: "/h", cwd: "/proj" });
+  assert.ok(!buildCodexArgs({ pin: PIN, promptText: "x" }).includes("-C"));
+  const withCwd = buildCodexArgs({ pin: PIN, promptText: "x", cwd: "/proj" });
   assert.equal(withCwd[withCwd.indexOf("-C") + 1], "/proj");
 });
 
-test("loadPolicyFile reads the real shipped policy and it carries the pin", () => {
-  const policy = loadPolicyFile("gpt-plus-flash");
-  assert.equal(policy.name, "gpt-plus-flash");
-  const gpt = policy.models.find((m) => m.id === "gpt");
-  assert.equal(gpt.model_name, "gpt-5.6-terra");
-  assert.equal(gpt.reasoning.effort, "high");
+test("an unconfigured project runs the shipped default, and it carries the driver pin", () => {
+  const dir = tmp();
+  try {
+    const run = resolveRunPolicy({ projectRoot: dir });
+    assert.equal(run.name, "gpt-plus-flash");
+    assert.equal(run.source, "builtin-default");
+    assert.deepEqual(run.driver.pin, PIN);
+  } finally { cleanup(dir); }
 });
 
-test("loadPolicyFile throws a clear error for a policy that doesn't exist", () => {
-  assert.throws(() => loadPolicyFile("no-such-policy"), /not found at/);
+test("a policy that doesn't exist is refused before spending, with exit code 2", () => {
+  const dir = tmp();
+  try {
+    assert.throws(() => resolveRunPolicy({ projectRoot: dir, policyArg: "no-such-policy" }), (err) => {
+      assert.match(err.message, /not found at/);
+      assert.equal(err.exitCode, 2);
+      return true;
+    });
+  } finally { cleanup(dir); }
 });
 
 test("parseArgs handles --key=value and bare flags", () => {
   const args = parseRunArgs(["--policy=x", "--dry-run", "--output-dir=/o"]);
   assert.deepEqual(args, { policy: "x", "dry-run": true, "output-dir": "/o" });
+});
+
+test("parseArgs takes the space form too: --max-turns 5 is 5, not one turn", () => {
+  assert.deepEqual(parseRunArgs(["--max-turns", "5"]), { "max-turns": "5" });
+  assert.deepEqual(parseRunArgs(["--output-dir", ".sdlc/runs/x"]), { "output-dir": ".sdlc/runs/x" });
+  assert.deepEqual(parseRunArgs(["--dry-run"]), { "dry-run": true });
+  assert.deepEqual(parseRunArgs(["--dry-run=false"]), { "dry-run": false });
+});
+
+test("parseArgs refuses a missing value, an unknown flag, a stray word and a repeat", () => {
+  assert.throws(() => parseRunArgs(["--resume"]), /--resume needs a value/);
+  assert.throws(() => parseRunArgs(["--resume", "--dry-run"]), /--resume needs a value/);
+  assert.throws(() => parseRunArgs(["--policy="]), /needs a value/);
+  assert.throws(() => parseRunArgs(["--bogus"]), /unknown flag --bogus/);
+  assert.throws(() => parseRunArgs(["stray"]), /unexpected argument 'stray'/);
+  assert.throws(() => parseRunArgs(["--gates=auto-approve", "--gates=prompt"]), /more than once/);
+  assert.throws(() => parseRunArgs(["--dry-run=yes"]), /takes no value/);
+});
+
+test("a usage error exits 2 before anything is spent", async () => {
+  for (const argv of [["--max-turns=0"], ["--max-turns=1.5"], ["--max-turns=abc"], ["--bogus"], ["--resume"]]) {
+    assert.equal(await runMain(argv, { cwd: tmpdir() }), 2, argv.join(" "));
+  }
 });
 
 // ── run.mjs: conductor prompt rendering ──────────────────────────────────
@@ -176,6 +248,23 @@ test("the shipped conductor prompt quotes paths that may contain spaces", () => 
   );
 });
 
+test("the conductor prompt names the run id and folder, the stop record and where tests run", () => {
+  const promptPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..", "..", "plugin", "codex", "prompts", "conductor.md",
+  );
+  const rendered = renderPrompt(readFileSync(promptPath, "utf-8"), {
+    PLUGIN_ROOT: "/plug", PROJECT_ROOT: "/proj", OUTPUT_DIR: "/proj/.sdlc/runs/r9",
+    CODE_DIR: "/proj/src", BRIEF_PATH: "/proj/brief.md", POLICY: "gpt-plus-flash", RUN_ID: "r9",
+    GATE_INSTRUCTION: "gate text", HANDOVER: "",
+  });
+  assert.match(rendered, /Your run id is `r9` and your run folder is `\/proj\/\.sdlc\/runs\/r9`/);
+  assert.match(rendered, /Do not\s+generate another run id/);
+  assert.match(rendered, /`\/proj\/\.sdlc\/runs\/r9\/stop\.json`/);
+  assert.match(rendered, /7\. test_run +→ in \/proj\/src:/);
+  assert.match(rendered, /"decision": "pending\|/);
+});
+
 test("the shipped conductor prompt states the authors-no-content rule", () => {
   const promptPath = join(
     dirname(fileURLToPath(import.meta.url)),
@@ -188,8 +277,21 @@ test("the shipped conductor prompt states the authors-no-content rule", () => {
 
 // ── run.mjs: gate modes ──────────────────────────────────────────────────
 
-test("the default gate mode tells the conductor to wait for a person", () => {
-  assert.match(GATE_MODES.prompt, /wait for their answer/i);
+test("the default gate mode records the gate as pending and ends the turn, so run.mjs can relay it", () => {
+  assert.match(GATE_MODES.prompt, /"decision": "pending"/);
+  assert.match(GATE_MODES.prompt, /end your turn/i);
+  assert.match(GATE_MODES.prompt, /next message/i);
+  assert.match(GATE_MODES.prompt, /Never record a decision they did not give/);
+  assert.ok(!/\{\{/.test(GATE_MODES.prompt), "it is rendered into the prompt, so it may not carry a placeholder");
+});
+
+test("under prompt, a question that is not a gate is relayed through question.json; unattended, it stops the run", () => {
+  assert.match(GATE_MODES.prompt, /brownfield job type or interview, the Phase 7 environment check/);
+  assert.match(GATE_MODES.prompt, /\{"question": "<the question, one line>"\} to question\.json/);
+  for (const mode of ["auto-approve", "auto-abort"]) {
+    assert.match(GATE_MODES[mode], /Do not ask a question you cannot receive an answer to/);
+    assert.match(GATE_MODES[mode], /stop\.json/);
+  }
 });
 
 test("auto-approve tells the conductor not to ask a question it cannot receive an answer to", () => {
@@ -225,7 +327,9 @@ test("renderSkills writes both skills with every placeholder resolved", () => {
       PLUGIN_ROOT: "/plug", PROJECT_ROOT: "/proj", OUTPUT_DIR: "/out",
       CODE_DIR: "/code", BRIEF_PATH: "/proj/brief.md", POLICY: "gpt-plus-flash", RUN_ID: "r1", GATE_INSTRUCTION: "g", GATE_INSTRUCTION: "gate text",
     });
-    assert.equal(written.length, 2, "both pipeline and brownfield-guide must render");
+    for (const name of ["pipeline.md", "brownfield-guide.md", "discovery.md"]) {
+      assert.ok(written.includes(join(dir, "skills", name)), `${name} must render`);
+    }
     for (const path of written) {
       const text = readFileSync(path, "utf-8");
       assert.ok(
@@ -260,9 +364,11 @@ const REAL_STREAM = [
 
 const PRICING = { input: 2.0, input_cached: 0.2, output: 12.0 };
 
+const POLICY_REF = { name: "gpt-seat-plus-flash", version: 1 };
+
 test("buildRunArtifacts models the driver's own cost from real turn usage", () => {
   const { modeled, rejection } = buildRunArtifacts({
-    jsonl: REAL_STREAM, pin: PIN, pricing: PRICING, passId: "run-1",
+    jsonl: REAL_STREAM, pin: PIN, pricing: PRICING, passId: "run-1", policy: POLICY_REF,
     now: () => "2026-08-31T00:00:00.000Z",
   });
   assert.equal(rejection, null);
@@ -277,9 +383,25 @@ test("buildRunArtifacts models the driver's own cost from real turn usage", () =
 
 test("buildRunArtifacts surfaces a pin rejection from the stream", () => {
   const rejected = '{"type":"turn.failed","error":{"message":"[ReasoningEffortParam] [reasoning.effort] [invalid_enum_value] bad"}}';
-  const { rejection } = buildRunArtifacts({ jsonl: rejected, pin: PIN, pricing: PRICING, passId: "r" });
+  const { rejection } = buildRunArtifacts({ jsonl: rejected, pin: PIN, pricing: PRICING, passId: "r", policy: POLICY_REF });
   assert.ok(rejection, "a rejected pin must be detected, not silently reported as a clean run");
   assert.match(rejection, /invalid_enum_value/);
+});
+
+test("buildRunArtifacts names the policy the run used, not a hard-coded one", () => {
+  const { modeled } = buildRunArtifacts({
+    jsonl: REAL_STREAM, pin: PIN, pricing: PRICING, passId: "r", policy: resolveRunPolicy({ projectRoot: join(dirname(fileURLToPath(import.meta.url)), "fixtures"), policyArg: "gpt-seat-plus-flash" }).policy,
+  });
+  assert.equal(modeled[0].routing.policy_name, "gpt-seat-plus-flash");
+});
+
+test("buildRunArtifacts prices a resumed thread once, from its running total", () => {
+  const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "codex-0.160.1");
+  const jsonl = ["exec1", "exec2", "exec3"].map((f) => readFileSync(join(fixtures, `${f}.jsonl`), "utf-8")).join("");
+  const { modeled } = buildRunArtifacts({ jsonl, pin: PIN, pricing: PRICING, passId: "r", policy: POLICY_REF });
+  assert.deepEqual(modeled.map((r) => r.input_tokens + r.input_tokens_cached), [1000, 3000, 5000]);
+  const total = modeled.reduce((s, r) => s + r.cost_usd, 0);
+  assert.ok(Math.abs(total - 0.01494) < 1e-9, `three invocations price at the last running total, got ${total}`);
 });
 
 // ── dispatch.mjs: the conductor's bridge tool ────────────────────────────
@@ -339,7 +461,10 @@ test("runDispatch writes the full result to --out and returns only a summary", a
       close: async () => {},
     });
 
-    const out = await runDispatch({ packet: packetPath, out: outPath, policy: "gpt-plus-flash" }, { connect });
+    const out = await runDispatch(
+      { packet: packetPath, out: outPath, policy: "gpt-plus-flash", telemetry: join(dir, "telemetry.jsonl") },
+      { connect },
+    );
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].name, "execute_with_model");
@@ -390,7 +515,7 @@ test("runDispatch reports ok:true for a successful execute_with_model regardless
       callTool: async () => ({ result: { success: true } }),
       close: async () => {},
     });
-    const out = await runDispatch({ packet: packetPath, out: join(dir, "o.json") }, { connect });
+    const out = await runDispatch({ packet: packetPath, out: join(dir, "o.json"), telemetry: join(dir, "t.jsonl") }, { connect });
     assert.equal(out.ok, true);
   } finally { cleanup(dir); }
 });
@@ -411,7 +536,7 @@ test("runDispatch requires --out — results never go to stdout", async () => {
 
 test("runDispatch gives a readable error for an unreadable packet file", async () => {
   await assert.rejects(
-    () => runDispatch({ packet: "/nonexistent/packet.json", out: "/tmp/o.json" }, { connect: async () => ({}) }),
+    () => runDispatch({ packet: "/nonexistent/packet.json", out: "/tmp/o.json", telemetry: "/tmp/t.jsonl" }, { connect: async () => ({}) }),
     /could not read the packet/,
   );
 });
@@ -427,7 +552,7 @@ test("runDispatch always closes the bridge, even when the tool call throws", asy
       close: async () => { closed = true; },
     });
     await assert.rejects(
-      () => runDispatch({ packet: packetPath, out: join(dir, "o.json") }, { connect }),
+      () => runDispatch({ packet: packetPath, out: join(dir, "o.json"), telemetry: join(dir, "t.jsonl") }, { connect }),
       /vendor exploded/,
     );
     assert.equal(closed, true, "a leaked bridge subprocess would outlive the run");
@@ -512,17 +637,16 @@ test("an empty handover leaves no stray placeholder in the rendered prompt", () 
 // that looks successful is the worst shape this failure could take, so the
 // driver now resumes the session until the pipeline signals completion.
 
-test("runIsComplete keys on SUMMARY.md, the artifact only the final phase writes", () => {
-  // Deliberately an artifact, not a phrase in the model's prose — a model
-  // can improvise "the run is complete"; it cannot improvise a file the
-  // final phase is contractually required to produce.
-  const dir = mkdtempSync(join(tmpdir(), "mmo-complete-"));
+test("costCapStop lets the run resume under the cap and stops it once the cap is spent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mmo-cap-"));
   try {
-    assert.equal(runIsComplete(dir), false);
-    writeFileSync(join(dir, "requirements.md"), "partial work");
-    assert.equal(runIsComplete(dir), false, "mid-pipeline artifacts are not completion");
-    writeFileSync(join(dir, "SUMMARY.md"), "done");
-    assert.equal(runIsComplete(dir), true);
+    const policy = { ...resolveRunPolicy({ projectRoot: dir, policyArg: "gpt-plus-flash" }).policy, hard_cost_cap_usd: 0.5 };
+    const telemetry = join(dir, "telemetry.jsonl");
+    assert.equal(costCapStop(policy, telemetry), null, "no telemetry yet is under any cap");
+    writeFileSync(telemetry, JSON.stringify({ cost_usd: 0.3 }) + "\n");
+    assert.equal(costCapStop(policy, telemetry), null);
+    writeFileSync(telemetry, JSON.stringify({ cost_usd: 0.3 }) + "\n" + JSON.stringify({ cost_usd: 0.2 }) + "\n");
+    assert.match(costCapStop(policy, telemetry), /COST_CAP_EXCEEDED/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -568,7 +692,81 @@ test("a resumed turn keeps the pin, the sandbox and the write-contract hook", ()
   assert.ok(args.includes(`model_reasoning_effort="${PIN.effort}"`));
   assert.ok(args.includes(`sandbox_mode="${SANDBOX_MODE}"`), "sandbox must survive a resume");
   assert.ok(args.some((a) => a.includes("write-contract-check.mjs")), "hook must survive a resume");
+  assert.ok(args.includes("features.hooks=true") && args.includes(HOOKS_OFF), "and so must its switches");
   assert.ok(args.some((a) => a.includes("network_access=true")), "bridge needs the network grant");
+});
+
+test("a resumed invocation is told its gate mode and never to answer a pending gate", () => {
+  for (const mode of Object.keys(GATE_MODES)) {
+    const text = resumePrompt(mode);
+    assert.ok(text.startsWith(RESUME_PROMPT));
+    assert.ok(text.includes(`Gate mode for this invocation: ${GATE_MODES[mode]}`), mode);
+  }
+  assert.match(RESUME_PROMPT, /do not answer it yourself/i);
+  assert.match(RESUME_PROMPT, /record why before you end your turn/i);
+  assert.doesNotMatch(RESUME_PROMPT, /say why again/i, "a stop with no new record reads as a context-ceiling stop");
+});
+
+test("a resume after a deliberate stop says the person chose to continue past it", () => {
+  const after = { outcome: "aborted", reason: "gate 1 aborted: auto-abort" };
+  const text = resumePrompt("auto-approve", after);
+  assert.match(text, /last stopped on purpose \(aborted: gate 1 aborted: auto-abort\)/);
+  assert.match(text, /resumed it with --gates=auto-approve: they chose to continue past that stop/);
+  assert.match(text, /write a new record first/);
+  assert.ok(text.endsWith(`Gate mode for this invocation: ${GATE_MODES["auto-approve"]}`));
+  for (const outcome of ["max_turns", "interrupted", "codex_failed", "killed"]) {
+    assert.equal(resumePrompt("prompt", { outcome }), resumePrompt("prompt"), outcome);
+  }
+});
+
+test("a question's answer is passed through as the person's words, with the gate mode", () => {
+  const text = questionAnswerPrompt("bugfix\n", "prompt");
+  assert.match(text, /^Answer from the person to your question: bugfix\n/);
+  assert.ok(text.includes(GATE_MODES.prompt));
+});
+
+test("the terminal reader drops input typed before the question and reads the line after it", async () => {
+  const { PassThrough } = await import("node:stream");
+  const stdin = new PassThrough();
+  const reader = createLineReader(stdin);
+  reader.attach();
+  stdin.write("stale\n\n");
+  let dropped = null;
+  const answer = reader.ask((n) => {
+    dropped = n;
+    setImmediate(() => stdin.write("approved\n"));
+  });
+  assert.equal(await answer, "approved");
+  assert.equal(dropped, 2);
+
+  const next = reader.ask(() => setImmediate(() => reader.cancel()));
+  assert.equal(await next, null, "cancel ends the wait");
+  assert.equal(await reader.ask(), null, "and every later one");
+  reader.close();
+});
+
+test("the terminal reader answers null at end of input", async () => {
+  const { PassThrough } = await import("node:stream");
+  const stdin = new PassThrough();
+  const reader = createLineReader(stdin);
+  stdin.end("typed before the question\n");
+  assert.equal(await reader.ask(), null);
+  reader.close();
+});
+
+test("a gate answer is passed through as the person's words, with the gate mode", () => {
+  const text = gateAnswerPrompt(2, "revise: add rate limits\n", "prompt");
+  assert.match(text, /^Gate 2 answer from the person: revise: add rate limits\n/);
+  assert.ok(text.includes(GATE_MODES.prompt));
+});
+
+test("buildCodexArgs passes --skip-git-repo-check only when asked, right after --json", () => {
+  for (const resumeThreadId of [null, "abc-123"]) {
+    const argv = buildCodexArgs({ pin: PIN, promptText: "x", skipGitRepoCheck: true, resumeThreadId });
+    assert.equal(argv[argv.indexOf("--json") + 1], "--skip-git-repo-check");
+    assert.ok(argv.indexOf("--skip-git-repo-check") < argv.indexOf("--"));
+    assert.ok(!buildCodexArgs({ pin: PIN, promptText: "x", resumeThreadId }).includes("--skip-git-repo-check"));
+  }
 });
 
 test("the resume prompt tells the model not to redo finished work", () => {

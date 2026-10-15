@@ -1,0 +1,10 @@
+{"v":1,"kind":"invocation_start","run_id":"fixture","invocation":1,"at":"2026-10-13T10:00:00.995Z","mode":"fresh","resume_thread_id":null,"policy":"gpt-plus-flash"}
+{"v":1,"kind":"codex","invocation":1,"thread_id":"019a0000-0000-7000-8000-0000000000a1","received_at":"2026-10-13T10:00:00.995Z","event":{"type":"thread.started","thread_id":"019a0000-0000-7000-8000-0000000000a1"}}
+{"v":1,"kind":"codex","invocation":1,"thread_id":"019a0000-0000-7000-8000-0000000000a1","received_at":"2026-10-13T10:00:00.995Z","event":{"type":"turn.started"}}
+{"v":1,"kind":"codex","invocation":1,"thread_id":"019a0000-0000-7000-8000-0000000000a1","received_at":"2026-10-13T10:00:00.995Z","event":{"type":"turn.completed","usage":{"input_tokens":40000,"cached_input_tokens":30000,"cache_write_input_tokens":0,"output_tokens":2000,"reasoning_output_tokens":0}}}
+{"v":1,"kind":"invocation_end","invocation":1,"at":"2026-10-13T10:00:01.055Z","thread_id":"019a0000-0000-7000-8000-0000000000a1","exit_status":0,"ended_by":"exit"}
+{"v":1,"kind":"invocation_start","run_id":"fixture","invocation":2,"at":"2026-10-13T10:00:02.045Z","mode":"resume","resume_thread_id":"019a0000-0000-7000-8000-0000000000a1","policy":"gpt-plus-flash"}
+{"v":1,"kind":"codex","invocation":2,"thread_id":"019a0000-0000-7000-8000-0000000000a1","received_at":"2026-10-13T10:00:02.045Z","event":{"type":"thread.started","thread_id":"019a0000-0000-7000-8000-0000000000a1"}}
+{"v":1,"kind":"codex","invocation":2,"thread_id":"019a0000-0000-7000-8000-0000000000a1","received_at":"2026-10-13T10:00:02.045Z","event":{"type":"turn.started"}}
+{"v":1,"kind":"codex","invocation":2,"thread_id":"019a0000-0000-7000-8000-0000000000a1","received_at":"2026-10-13T10:00:02.045Z","event":{"type":"turn.completed","usage":{"input_tokens":100000,"cached_input_tokens":80000,"cache_write_input_tokens":0,"output_tokens":5000,"reasoning_output_tokens":0}}}
+{"v":1,"kind":"invocation_end","invocation":2,"at":"2026-10-13T10:00:02.155Z","thread_id":"019a0000-0000-7000-8000-0000000000a1","exit_status":0,"ended_by":"exit"}

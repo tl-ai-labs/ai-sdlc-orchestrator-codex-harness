@@ -1,0 +1,5 @@
+# This playbook only runs from the copy start-run.mjs or run.mjs renders into
+# the run folder: here its commands still hold unfilled placeholders. Implicit
+# matching is off so the model never picks it from the skill list.
+policy:
+  allow_implicit_invocation: false

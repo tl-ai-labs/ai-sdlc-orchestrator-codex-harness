@@ -209,11 +209,44 @@ export function workerTaskMarkdown(
 }
 
 /**
+ * How each Antigravity SDK version reports input in its usage totals. The two
+ * readings disagree by the whole cached amount:
+ *  - "inclusive": `prompt_token_count` is all input, `cached_content_token_count` part of it.
+ *  - "disjoint": `prompt_token_count` is fresh input only, cached on top of it.
+ * Only versions checked against Google's own token counter (Cloud Monitoring,
+ * aiplatform.googleapis.com/publisher/online_serving/token_count) are listed.
+ * Add a version here only after the same check, then raise the pin in
+ * worker/requirements.txt.
+ */
+export const AGY_USAGE_SEMANTICS: Readonly<Record<string, "inclusive" | "disjoint">> = Object.freeze({
+  "0.1.9": "inclusive",
+  "0.1.16": "disjoint",
+});
+
+export type AgyUsageSemantics = "inclusive" | "disjoint" | "unverified";
+
+/**
+ * The reading for one sidecar, from the SDK version the worker recorded. An
+ * unlisted version is "unverified"; so is an inclusive sidecar whose cached
+ * count exceeds its prompt count, which that reading cannot produce.
+ */
+export function sidecarUsageSemantics(sidecar: any): AgyUsageSemantics {
+  const known = AGY_USAGE_SEMANTICS[String(sidecar?.sdk_version ?? "")];
+  if (!known) return "unverified";
+  const usage = (sidecar && sidecar.usage) || {};
+  if (known === "inclusive" && Number(usage.cached_content_token_count ?? 0) > Number(usage.prompt_token_count ?? 0)) {
+    return "unverified";
+  }
+  return known;
+}
+
+/**
  * Map worker-sidecar tokens onto the orchestrator's disjoint convention.
  * TWO TRAPS:
  *  1. Sidecar keys are snake_case (Python SDK), not camelCase.
- *  2. `prompt_token_count` INCLUDES the cached portion — subtract before
- *     handing to computeCostUsd, which needs disjoint counts.
+ *  2. What `prompt_token_count` means depends on the SDK version (see
+ *     AGY_USAGE_SEMANTICS). An unverified version takes the disjoint reading,
+ *     the larger bill, so an unchecked SDK can over-report but never under-report.
  * Thoughts fold into `output` for costing and duplicate to `output_reasoning`
  * for reporting only (computeCostUsd never reads that field).
  */
@@ -229,7 +262,7 @@ export function mapSidecarTokens(sidecar: any): {
   const candidates = Number(usage.candidates_token_count ?? 0);
   const thoughts = Number(usage.thoughts_token_count ?? 0);
   return {
-    input: Math.max(0, prompt - cached),
+    input: sidecarUsageSemantics(sidecar) === "inclusive" ? Math.max(0, prompt - cached) : prompt,
     input_cached: cached,
     output: candidates + thoughts,
     output_reasoning: thoughts,

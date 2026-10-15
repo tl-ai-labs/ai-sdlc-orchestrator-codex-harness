@@ -1,0 +1,128 @@
+{
+  "type": "object",
+  "properties": {
+    "packets": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The child TaskPackets in dependency order: a packet runs only after every packet listed before it.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "codegen",
+              "tests",
+              "docs",
+              "debug",
+              "refactor"
+            ],
+            "description": "codegen for a source change, tests for a test file, docs for documentation, debug for a reproduction or diagnosis note, refactor for a change that keeps behaviour."
+          },
+          "task_type": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "A snake_case work type, such as controller_handler, service_method, dto, test_unit or env_docs."
+          },
+          "subtype": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "null, unless the stack guide names a subtype for this task type."
+          },
+          "module": {
+            "type": "string",
+            "description": "A coarse grouping for the cost report, such as auth, billing or cross."
+          },
+          "instruction": {
+            "type": "string",
+            "description": "What the worker does, imperative and under about 300 tokens. Name the file it writes and what must be true of it."
+          },
+          "inputs": {
+            "type": "array",
+            "description": "The file slices the worker reads; it sees nothing else.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Relative to the project root. A stack guide keeps the absolute path it was given under."
+                },
+                "content": {
+                  "type": "string",
+                  "description": "An empty string to have the whole file read when the packet runs, or a slice. Always empty for the file this packet writes and for a file an earlier packet writes."
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "Why the worker needs it."
+                }
+              },
+              "required": [
+                "path",
+                "content",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "output_schema_json": {
+            "type": "string",
+            "description": "The JSON Schema the worker's reply must match, encoded as a JSON string. For a packet that writes one file: {\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\"}},\"required\":[\"content\"]}."
+          },
+          "acceptance": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Testable bullets the result must meet.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "budget": {
+            "type": "object",
+            "description": "Token ceilings for the worker.",
+            "properties": {
+              "maxInputTokens": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxOutputTokens": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "maxInputTokens",
+              "maxOutputTokens"
+            ],
+            "additionalProperties": false
+          },
+          "artifact_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project-relative path this packet writes, or null when it writes no file."
+          }
+        },
+        "required": [
+          "phase",
+          "task_type",
+          "subtype",
+          "module",
+          "instruction",
+          "inputs",
+          "output_schema_json",
+          "acceptance",
+          "budget",
+          "artifact_path"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "packets"
+  ],
+  "additionalProperties": false
+}

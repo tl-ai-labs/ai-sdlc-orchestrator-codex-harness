@@ -1,0 +1,33 @@
+{
+  "run_id": "20261013-101500-feature-3fa2c1",
+  "policy": "gpt-seat-plus-flash",
+  "gates": "auto-approve",
+  "pin": {
+    "model": "gpt-5.6-terra",
+    "effort": "high",
+    "sandbox": "workspace-write",
+    "approval_policy": "never"
+  },
+  "started_at": "2026-10-13T10:15:00Z",
+  "ended_at": "2026-10-13T10:44:30Z",
+  "codex_exit_status": null,
+  "driver_turns": 2,
+  "codex_invocations": 2,
+  "completed": false,
+  "cost_cap_stop": null,
+  "driver_cost_usd_modeled": 0.322,
+  "pin_rejection": null,
+  "events_captured": 11,
+  "driver_turns_incomplete": 1,
+  "driver_cost_complete": false,
+  "thread_ids": [
+    "019a0000-0000-7000-8000-00000000f00d"
+  ],
+  "outcome": "interrupted",
+  "outcome_reason": "SIGINT",
+  "exit_code": 130,
+  "codex_warnings": [
+    "Defaulting to fallback metadata for gpt-5.6-terra"
+  ],
+  "driver_auth": "chatgpt"
+}

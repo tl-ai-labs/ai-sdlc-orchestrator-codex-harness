@@ -37,7 +37,7 @@
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve, join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMain } from "../scripts/lib/is-main.mjs";
 
 /**
  * Our own command names — hardcoded because we OWN them. If a future ticket
@@ -299,7 +299,7 @@ export function runChecks(checks = CHECKS) {
   return { schema_version: 1, ok: blockers === 0, blockers, advisories, checks: results };
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isMain(import.meta.url, process.argv[1])) {
   try {
     const args = parseArgs(process.argv.slice(2));
     const report = { ...runChecks(), headless: args.headless };

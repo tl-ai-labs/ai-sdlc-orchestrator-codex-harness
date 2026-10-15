@@ -8,12 +8,15 @@
  */
 
 import type {
+  ModelConfig,
   Policy,
   Rule,
   RoutingDecision,
   RuleMatcher,
   SelectOverrides,
 } from "./types.js";
+import { computeCostUsd, round6 } from "./pricing.js";
+import { effectivePricing, type RateCard } from "./prices.js";
 
 export interface TaskContext {
   phase: string;
@@ -207,9 +210,30 @@ export interface ReplayEvent {
   task_type: string;
   module: string;
   retry_count: number;
+  /** Fresh input, disjoint from `input_tokens_cached` — as telemetry events store it. */
   input_tokens: number;
   input_tokens_cached: number;
   output_tokens: number;
+  /** The event's own time; it prices on that UTC day. Absent: the replay's own day. */
+  ts?: string;
+  /** One request's whole prompt, cached tokens included. Absent: fresh + cached bounds the tier. */
+  prompt_tokens?: number;
+}
+
+export interface ReplayOptions {
+  now?: Date;
+  /** The card a dispatch of `model` would bill at this environment's endpoint (the Vertex regional surcharge). */
+  billedRates?: (model: ModelConfig, rates: RateCard) => RateCard;
+}
+
+export interface ReplayResult {
+  total_cost_usd: number;
+  per_model: Record<string, number>;
+  /** Events nothing prices, left out of the total. */
+  unpriced: Array<{ model_id: string; model_name: string; reason: string; events: number }>;
+  price_warnings: string[];
+  /** Events billed at a tier's card, and events billed at the standard card without proof they were below it. */
+  tiers: { long_context: number; unverified: number };
 }
 
 export function simulatePolicyCost(
@@ -217,21 +241,47 @@ export function simulatePolicyCost(
   policy: Policy,
   // Defaulting to no overrides prices the policy's defaults — the right
   // answer when the caller has not said otherwise.
-  overrides: SelectOverrides = {}
-): { total_cost_usd: number; per_model: Record<string, number> } {
+  overrides: SelectOverrides = {},
+  opts: ReplayOptions = {},
+): ReplayResult {
+  const now = opts.now ?? new Date();
   const perModel: Record<string, number> = {};
+  const unpriced = new Map<string, ReplayResult["unpriced"][number]>();
+  const warnings = new Set<string>();
+  const tiers = { long_context: 0, unverified: 0 };
   let total = 0;
   for (const ev of events) {
     const decision = pickModel(ev, policy, overrides);
     const model = policy.models.find((m) => m.id === decision.modelId);
     if (!model) continue;
-    const inputFresh = ev.input_tokens - ev.input_tokens_cached;
-    const cost =
-      (inputFresh / 1_000_000) * model.pricing.input +
-      (ev.input_tokens_cached / 1_000_000) * model.pricing.input_cached +
-      (ev.output_tokens / 1_000_000) * model.pricing.output;
+    const size =
+      typeof ev.prompt_tokens === "number"
+        ? { requestInputTokens: ev.prompt_tokens }
+        : { aggregateInputTokens: ev.input_tokens + ev.input_tokens_cached };
+    const price = effectivePricing(model, ev.ts ?? now, size);
+    for (const w of price.warnings) warnings.add(w);
+    if (price.unpriced) {
+      const key = `${model.id}\u0000${price.reason}`;
+      const seen = unpriced.get(key) ?? { model_id: model.id, model_name: model.model_name, reason: price.reason, events: 0 };
+      seen.events += 1;
+      unpriced.set(key, seen);
+      continue;
+    }
+    if (price.tier === "long_context") tiers.long_context += 1;
+    if (price.tier_unverified) tiers.unverified += 1;
+    const rates = opts.billedRates ? opts.billedRates(model, price.pricing) : price.pricing;
+    const cost = computeCostUsd(
+      { input: ev.input_tokens, input_cached: ev.input_tokens_cached, output: ev.output_tokens },
+      rates
+    );
     perModel[model.id] = (perModel[model.id] ?? 0) + cost;
     total += cost;
   }
-  return { total_cost_usd: total, per_model: perModel };
+  return {
+    total_cost_usd: round6(total),
+    per_model: Object.fromEntries(Object.entries(perModel).map(([id, usd]) => [id, round6(usd)])),
+    unpriced: [...unpriced.values()],
+    price_warnings: [...warnings],
+    tiers,
+  };
 }

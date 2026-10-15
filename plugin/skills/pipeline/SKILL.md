@@ -1,9 +1,17 @@
 ---
 name: pipeline
-description: The end-to-end AI-SDLC workflow definition consumed by the conductor. Defines the state machine, TaskPacket schema, HITL gates, telemetry contract, and the prompts/templates for each phase. The conductor reads this skill to know exactly what to do at each step.
+description: "The conductor's playbook: state machine, TaskPacket schema, HITL gates and telemetry contract. A run reads the copy rendered into .sdlc/runs/<run-id>/skills/pipeline.md; this file is not runnable as is. Start a run with $mmo-codex:greenfield or $mmo-codex:brownfield."
 ---
 
 # AI-SDLC Workflow — Conductor Playbook
+
+**Follow only the rendered copy.** If the file you opened ends in `/skills/pipeline/SKILL.md`, it is
+the plugin's unrendered source: its commands hold double-brace markers where real paths belong,
+and none of them runs. Do not follow it. Follow the `greenfield` skill (a new app) or the
+`brownfield` skill (an existing repository) instead, at `<plugin-root>/skills/greenfield/SKILL.md`
+or `<plugin-root>/skills/brownfield/SKILL.md`, where `<plugin-root>` is two folders above this file.
+Ask the user which one if the request does not say. Its start script renders a runnable copy of
+this playbook into `.sdlc/runs/<run-id>/skills/pipeline.md`.
 
 This skill is the source of truth for the conductor. When invoked under `$mmo-codex:pass`, the conductor follows the state machine below.
 
@@ -26,8 +34,8 @@ This skill is the source of truth for the conductor. When invoked under `$mmo-co
 7. test_run                           → npm install && npm test; debug failures (route via policy)
 8. security_review                    → security_review.md
    ── GATE 3 ─────────────────────────────────────
-9. generate_final_report              → updates manifest.json with artifacts + rollups
-   ── GATE 4 (final acceptance) ───────────────────
+9. generate_final_report              → write-manifest.mjs writes manifest.json + SUMMARY.md
+   ── GATE 4 (final acceptance) ───────────────────  → write-manifest.mjs again, --status=accepted
 ```
 
 ---
@@ -51,8 +59,25 @@ Write the TaskPacket to a JSON file first, run the command, then **read the resu
 `--out` file**. Stdout carries only a one-line summary — do not parse it for anything beyond a
 quick success check. A non-zero exit means the dispatch failed.
 
+If stderr contains `COST_CAP_EXCEEDED`, the run has spent its policy's `hard_cost_cap_usd`.
+Do not retry and do not dispatch anything else: the bridge refuses every further call this run.
+Stop, print the message verbatim, and do not go on to Phase 9 — the run did not finish.
+
 Keep the single quotes around paths. They can contain spaces, and an unquoted one splits into
 separate arguments.
+
+---
+
+## The tools a run uses
+
+The commands in this playbook are the run's whole tool set. Do not fetch a toolchain, runtime or
+package manager yourself (a Node or Python download, `curl … | sh`, `npm install -g`), and do not
+write an executable helper (a `.py`, `.sh` or `.mjs` script) into the run folder or the code
+directory to drive the pipeline for you. A helper runs outside the cost record and the gate
+record, and a fetched toolchain makes the run depend on whatever you downloaded. Phase 7's
+`npm install` of the app's own dependencies in the code directory is part of the playbook; the
+tools that run it are not yours to provide. When a step needs a tool this machine lacks, stop:
+tell the user what is missing and how to install it, and end the run with outcome `stopped`.
 
 ---
 
@@ -133,9 +158,70 @@ validation schema, `.env.example`, and `.env.test` — and the brownfield varian
 
 ### Phase 4 — plan_task_packets
 
-From `design.md`, emit `<output_dir>/packets.json` — a list of TaskPackets, one per file-sized unit of work.
+The planner is a dispatched worker: it sees only the packet you send it, so the plan's shape is not
+yours to write. `plan-packets.mjs` builds the planner's packet around the shipped plan schema
+(`{{PLUGIN_ROOT}}/config/schemas/`), then checks the plan that comes back and writes
+`{{OUTPUT_DIR}}/packets.json`, one TaskPacket per file-sized unit of work. You write only the
+planner's instruction and the list of files it reads. Never write the planner's packet or its
+`outputSchema`, never write or edit `packets.json`, and never add, drop or reshape a packet of the
+plan, nor edit a plan the script refused. Phase 5's work on the plan stays yours: copying a packet
+out of `packets.json` into its own file to dispatch it, filling its empty inputs, and building a
+refined packet when a result fails validation.
 
-Suggested packet types and one packet per:
+1. **The instruction.** Write `{{OUTPUT_DIR}}/plan-instruction.md`: what to plan, and from what.
+   Name the design sections the work comes from (`design.md`, or in brownfield `change_plan.md` or
+   `requirements.md`), each file a packet changes or adds and why, and the packet kinds below that
+   this run needs (in brownfield, the intent matrix's Phase 4 cell). Leave out field names, the run
+   id and path rules: the script appends the plan rules from the run's own record (dependency order,
+   one packet per file, this run's allowlist and off-limits, where notes go). On a resumed run that
+   stopped in Phase 4 the file is already there: keep it as it is, since the person may have edited
+   it to steer the next plan, and go on to step 2.
+2. **What the planner reads.** Write `{{OUTPUT_DIR}}/plan-inputs.json`, a JSON list of
+   `{"path": "<path>", "reason": "<why the planner needs it>"}`: the run's records by their absolute
+   paths, `{{OUTPUT_DIR}}/requirements.md` and `{{OUTPUT_DIR}}/design.md` or
+   `{{OUTPUT_DIR}}/change_plan.md`, and the source files the work touches, relative to the project
+   root. In brownfield, add `.sdlc/baseline/stack-profile.md` when discovery wrote one, and the
+   detected stack's guide by its absolute path, `{{PLUGIN_ROOT}}/skills/pipeline/stacks/<stack>.md`;
+   the profile wins where they disagree. The script reads each file from disk, up to 128 KB, and
+   refuses an off-limits one or one that holds a secret-shaped string.
+3. **Build the planner's packet.**
+
+   ```bash
+   node '{{PLUGIN_ROOT}}/scripts/plan-packets.mjs' --build --run-dir='{{OUTPUT_DIR}}' \
+     --instruction='{{OUTPUT_DIR}}/plan-instruction.md' --inputs='{{OUTPUT_DIR}}/plan-inputs.json'
+   ```
+
+   It writes the packet and prints three lines: `packet:` (the packet's path), `result:` (where its
+   dispatch writes) and `attempt:`. Dispatch it with the dispatch command above, `--packet=` the
+   `packet:` path and `--out=` the `result:` path.
+4. **Accept the plan.**
+
+   ```bash
+   node '{{PLUGIN_ROOT}}/scripts/plan-packets.mjs' --accept='<the result: path>' --run-dir='{{OUTPUT_DIR}}'
+   ```
+
+   - **Exit 0.** `packets.json` holds the plan in the canonical shape below, each packet's `id`,
+     `pass_id`, `retry_count` and (brownfield) `intent` filled in by the script. Go on to Phase 5.
+   - **Exit 1, the plan was refused.** stderr lists each problem, numbered, and nothing was
+     written. Run step 3's command again with `--previous='<the result: path>'` added. The new
+     packet carries those problems and the refused plan to the planner, and counts the attempt.
+     Dispatch it and accept again.
+   - **Exit 1, the dispatch failed.** The planner sent no reply (a timeout, a usage limit, a vendor
+     error). It is not an attempt, and nothing goes back to the planner. Run step 3's command again
+     with the `--previous` the message names, if any, and dispatch the new packet.
+   - **Exit 2.** Your command or `plan-inputs.json` is wrong. Fix what the message names and run it
+     again; it is not an attempt. Once a plan in this session was refused, step 3 needs
+     `--previous='<that result>'`, and exits 2 without it.
+5. **Three attempts at most.** A session (one `run.mjs` driver process, or one `start-run.mjs`
+   session) builds three planner packets that reach the planner, and stops at its second failed
+   dispatch. When the message says the session has had its attempts, or its failed dispatches,
+   do not dispatch another plan: stop the run. On the `run.mjs` route, write the `stop.json` the
+   message prints, `needs` included, and end your turn. In a session, tell the user what the
+   message says and record the end (`--outcome=stopped`, see "Run logging"). A resumed run is a
+   new session with three new attempts: start at step 3, adding `--previous='<the last refused
+   result>'` from before the stop when there is one, so the planner sees why that plan was refused.
+
+The packet kinds the instruction asks for, one packet per:
 
 | task_type | What |
 |---|---|
@@ -158,11 +244,16 @@ Suggested packet types and one packet per:
 | `env_docs` | `.env.example` — every required environment variable from `design.md` §6, no values |
 | `env_test_fixture` | `.env.test` — every required environment variable with a value that satisfies the schema declared in `design.md` §6 (e.g., a 32-char string where the schema demands `min(32)`, `file:./test.db` for the DB URL, a hex-encoded fake KEK). This file is what the test runner copies to `.env` before `npm test`. |
 
-When the app uses a validating `ConfigModule` (or Joi / Zod / envalid equivalent), packets for `env_docs` and `env_test_fixture` are **required** — omitting either is a senior-review blocker. The two files must be internally consistent: every key listed in `.env.example` must appear in `.env.test` with a schema-valid value.
+These greenfield types are suggestions: the greenfield plan schema takes any snake_case
+`task_type`, and a policy routes the codegen ones it names to the mechanical tier. When the app uses
+a validating `ConfigModule` (or Joi / Zod / envalid equivalent), the instruction asks for `env_docs`
+and `env_test_fixture` packets — omitting either is a senior-review blocker. The two files must be
+internally consistent: every key listed in `.env.example` must appear in `.env.test` with a
+schema-valid value.
 
 ### Brownfield-mode task types (v1)
 
-The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`plugin/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance.
+The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`{{PLUGIN_ROOT}}/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance. The brownfield plan schema takes these task types and no others.
 
 | task_type | Purpose | Common `subtype` values |
 |---|---|---|
@@ -181,20 +272,23 @@ The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfiel
 
 **Framework-owned wiring** — new controllers/routes/views usually need a corresponding
 registration edit in a wiring file (Nest module, Django urls.py, FastAPI main.py's
-include_router). Emit these as **paired packets** with the same `pass_id` — atomic per-pair:
-if the wiring edit fails, roll back the new-file packet within the same pair.
+include_router). Ask for these as **paired packets**, the wiring packet listed right after the new
+file it registers and naming it in its `acceptance` — atomic per-pair: if the wiring edit fails,
+roll back the new-file packet within the same pair.
 
-**Every brownfield packet MUST set `artifact_path`** (§7.1) so the write-contract validator can
-reject off-limits paths at dispatch time. Missing `artifact_path` is a planner bug.
+**Every brownfield packet sets `artifact_path`** (§7.1). The script refuses a packet without one,
+or with a target outside the frozen allowlist, off-limits, or in the run folder outside
+`.sdlc/runs/{{RUN_ID}}/notes/` (where a reproduce or diagnose note goes), so the write hook never
+meets a target it would refuse.
 
 **`doc_addition` vs `doc_update` — read from the brief, don't infer.** When `intent_brief.md`
 carries a "## Task type" heading (only present when the chosen intent declares `task_types` in
-`intents.json` — currently just `docs`), every packet you plan for this run uses that exact
-`task_type` value. Do not infer `doc_addition` vs `doc_update` from file existence or context —
-the user already chose it at brief-collection time (`brownfield-guide/SKILL.md` step 4b), and a
+`intents.json` — currently just `docs`), every packet for this run uses that exact `task_type`
+value: the script reads the heading, tells the planner, and refuses a plan that uses another. The
+user already chose it at brief-collection time (`brownfield-guide/SKILL.md` step 4b), and a
 per-project policy may route the two differently (an update is a smaller edit than fresh
 authoring, and might reasonably go to a cheaper model). When the heading is absent — every
-non-docs intent, and `docs` runs from before this existed — infer as before.
+non-docs intent, and `docs` runs from before this existed — the planner chooses.
 
 ### TaskPacket initial output-ceiling budgets
 
@@ -205,25 +299,30 @@ Set `budget.maxOutputTokens` per phase type. The adapter automatically doubles t
 - **Docs, ADR, README:** `3000`. Same doubling behavior.
 - **Debug packets:** inherit from the packet they refine.
 
-Every attempt emits its own TelemetryEvent with `attempt_number`, `ceiling_used`, and (on retries) `retry_reason: "output_cap"` — all sharing the packet's `task_id`. The report collapses them into one row per packet.
+Every attempt emits its own TelemetryEvent with `attempt_number`, `ceiling_used`, and (on retries) `retry_reason: "output_cap"` or, for an OpenAI request sent again after a transient failure, `"transient"` — all sharing the packet's `task_id`. The report collapses them into one row per packet.
 
 ### Phase 5 — execute_packets
 
-Emit `phase.start` before the first packet and `phase.end` after the last — see "Run logging" in
-the conductor prompt. This is the phase with the most silence between pre-flight and Gate 1 otherwise:
+Emit `phase.start` before the first packet and `phase.end` after the last — see "Run logging"
+below. This is the phase with the most silence between pre-flight and Gate 1 otherwise:
 every dispatch inside the loop below already logs itself via the bridge (`route.decide`,
 `dispatch.start`/`.end`), but nothing marks the loop's own boundaries without this call.
 
-For each packet, in dependency order:
+For each packet in `packets.json`, in order (the plan lists them in dependency order):
 
-Dispatch it with the command above. The bridge routes per policy — you do not choose the model.
-Validate the returned structured output against the schema; if invalid, construct a *refined*
-packet (new id, `retry_count+1`, with the validation error appended to instruction) and
-re-dispatch. After 2 mechanical-tier retries fail, the policy escalates to the premium tier
-automatically (rule with `retry_count: { gte: 2 }`) — the routing decision is the policy's, and
-the escalated packet dispatches exactly like every other one.
+An input whose `content` is empty names a file an earlier packet wrote; put that file's content in
+before you dispatch. Dispatch it with the command above. The bridge routes per policy — you do not
+choose the model. Validate the returned structured output against the schema; if invalid,
+construct a *refined* packet (new id, `retry_count+1`, with the validation error appended to
+instruction) and re-dispatch. After 2 mechanical-tier attempts fail, the policy sends the third (`retry_count: 2`)
+to the premium tier automatically (a rule on `phase: [codegen, tests, docs]` with
+`retry_count: { gte: 2 }`, and one on `debug`) — the routing decision is the policy's, and the
+escalated packet dispatches exactly like every other one.
 
-Write the returned file content to disk at the packet's stated `artifact_path`.
+Write the returned file content to disk at the packet's stated `artifact_path`. In a brownfield
+run the write hook snapshots each file before your first write to it lands, for
+`$mmo-codex:revert`. Do not run `write-provenance.mjs` yourself, and do not write under
+`.sdlc/runs/<run-id>/backups/`.
 
 ### Phase 6 — senior_code_review
 
@@ -247,13 +346,18 @@ verdict as final.
 
 **Greenfield mode.** Bootstrap the env fixture first — this is required for any app whose codegen produced a validating `ConfigModule` (or equivalent) at boot. The codegen phase is contractually required (see Phase 5 acceptance criteria and the senior review's env-fixture check) to emit `.env.example` (docs) and `.env.test` (fixture values that satisfy the declared schema).
 
+Run it from the code directory, not the run folder — `<output_dir>` holds the run record and has
+no `package.json`.
+
 ```bash
-cd <output_dir>
+cd '<code_dir>'
 # Only copy .env.test → .env when neither exists. Never overwrite an existing .env —
 # a real .env holds real secrets and belongs to the user.
-if [ -f .env.test ] && [ ! -f .env ]; then cp .env.test .env; fi
+if [ -f .env.test ] && [ ! -f .env ]; then cp .env.test '<that folder, absolute>/.env'; fi
 npm install --silent && npm test
 ```
+
+Write the `cp` target as the absolute path of the folder you `cd` into, spelled out and in single quotes. The write hook lets a shell command create a missing `.env` only at a literal absolute path: a relative one can land in a folder the hook cannot see.
 
 **Brownfield mode.** The greenfield env-copy above is refused entirely — the repo already has an `.env` (or an equivalent secrets manager) that the user manages, and copying a codegen-produced fixture would either overwrite real secrets or drop the run into a schema-invalid state. Instead:
 
@@ -262,17 +366,18 @@ cd <repo-root>   # NOT <output_dir> — the app-under-test is the user's actual 
 # Do NOT touch .env under any circumstances. Do NOT copy .env.test → .env.
 ```
 
-If codegen introduced new required env vars (via `existing_file_edit` on `.env.example`):
-1. Append the new keys to `.env.example` (this IS a permitted write — .env.example is in the allowlist by default and holds no values, only key names).
-2. Print the list of new keys to the operator with a mini-gate: *"Codegen introduced N new required env vars: X, Y, Z. Populate them in your .env before Phase 7 continues, or say `skip` to run Phase 7 anyway (tests requiring these keys will fail)."*
-3. Wait for the user's response before invoking the test command.
+If codegen introduced new required env vars:
+1. Do not write `.env.example` or any other `.env*` file: the write hook refuses every one of them while the run's contract is live, whatever the allowlist says.
+2. Print the list of new keys to the operator with a mini-gate: *"Codegen introduced N new required env vars: X, Y, Z. Add them to `.env.example` and populate them in your .env before Phase 7 continues, or say `skip` to run Phase 7 anyway (tests requiring these keys will fail)."*
+3. Wait for the user's response before invoking the test command. On the `run.mjs` route, put the
+   question to them the way your gate instruction says (under `--gates=prompt`, `question.json`).
 
 The test command in brownfield is `baseline.test_command` (confirmed at Gate 0), not hardcoded `npm test`. Working directory is the repo root (not `<output_dir>`); in monorepos, use the per-package scope from `baseline.monorepo.packages[].test_command` for whichever package the changed files belong to.
 
 **Both modes:**
 
 On failure:
-- If the error is `Config validation error: "X" is required` or equivalent → the codegen phase missed keys. In greenfield build a debug TaskPacket routed to codegen to add the missing keys with schema-valid values. In brownfield, ask the user via the mini-gate above; do NOT patch `.env` from the harness.
+- If the error is `Config validation error: "X" is required` or equivalent → the codegen phase missed keys. Do NOT patch `.env`, `.env.test` or any other `.env*` file from the harness, in either mode: the write hook refuses an edit to one that already exists. In greenfield, name the missing keys with schema-valid fixture values for the user and ask them to add those to `.env.test` and `.env.example`, or say `skip`. In brownfield, ask the user via the mini-gate above.
 - Any other failure → parse the output, build a `debug` TaskPacket with the failing test name + error + relevant source slice. Route via policy. Retry up to 2 cost-efficient tier attempts; the policy escalates to the premium tier from there.
 
 **Test-command probe (optional Phase 0.5 in brownfield).** The pipeline pre-check (§7.4) already ran the discovered test command with `--collect-only` / `--dry-run` at prompt 1 to prove deps are installed. If pre-check step 2 failed for this run, Phase 7 halts with the recorded error rather than attempting the real run.
@@ -296,9 +401,32 @@ Phase 6.
 
 ### Phase 9 — generate_final_report
 
-Read all events in `<telemetry_path>`. Build rollup manifest using the `buildManifest` shape (see `plugin/mcp/model-dispatch/src/telemetry.ts`). Write `<output_dir>/manifest.json`. Also write a brief `<output_dir>/SUMMARY.md` with: total cost, breakdown, links to key artifacts.
+Run one command. It builds `<output_dir>/manifest.json` from `telemetry.jsonl`, `gates.jsonl` and
+the driver's record with the bridge's own `buildManifest`, and renders `<output_dir>/SUMMARY.md`
+from it:
 
-The driver's own loop cost is recorded separately and automatically — see the telemetry contract below. Do not try to account for it yourself.
+```
+node '{{PLUGIN_ROOT}}/scripts/write-manifest.mjs' '{{OUTPUT_DIR}}' \
+  --run-id={{RUN_ID}} --policy={{POLICY}} \
+  --project-root='{{PROJECT_ROOT}}' --code-dir='{{CODE_DIR}}' --summary
+```
+
+**Do not write manifest.json or SUMMARY.md yourself**, and do not edit either file once the
+command has written it. `manifest.json` records the hash of the `SUMMARY.md` it rendered: a
+hand-written or edited `SUMMARY.md` reads as a run that has not finished.
+
+The command prints the dispatched total, then a `note:` line for anything it left out (telemetry
+lines it could not read, file counts it could not make). Print the notes. A non-zero exit means
+`manifest.json` was not written, and a `SUMMARY.md` it left behind does not count: fix what its
+message names and run it again.
+
+`SUMMARY.md` states the conductor's own cost as the record has it. The run's end reads it from
+the conductor's codex session file on both routes (`end-run.mjs` in a session, `run.mjs` on a
+headless run, which also checks it against its exec stream) and, for a completed run, renders
+`SUMMARY.md` again with that figure. Do not add a figure for it; see the telemetry contract below.
+
+This first `SUMMARY.md` is provisional. The run is finished only once Gate 4 is accepted and the
+command has run again with `--status=accepted` (see Gate 4).
 
 ---
 
@@ -307,7 +435,9 @@ The driver's own loop cost is recorded separately and automatically — see the 
 ```ts
 {
   id: "tp_<phase>_<seq>",
-  phase: "codegen" | "tests" | "docs" | "debug" | "refactor" | ...,
+  phase: "requirements_analysis" | "architecture_design" | "plan_task_packets" | "codegen" | "tests"
+       | "docs" | "debug" | "senior_code_review" | "security_review" | "refactor" | "final_report"
+       | "discovery" | "change_plan",  // brownfield adds the last two; the bridge refuses any other name
   task_type: "controller_handler" | "service_method" | ...,
   module: "employees" | "leave" | ...,
   instruction: "<imperative, <300 tokens>",
@@ -316,8 +446,10 @@ The driver's own loop cost is recorded separately and automatically — see the 
   acceptance: ["<testable bullet>", ...],
   budget: { maxInputTokens: 4000, maxOutputTokens: 3000 },  // codegen initial; adapter doubles on max_tokens truncation up to 3× (see below)
   retry_count: 0,
-  pass_id: "pass1" | "pass2",
-  intent: "docs" | "bugfix" | "feature-extend" | "feature-new" | "refactor" | "test" | "deps"  // brownfield only — omit entirely on greenfield packets
+  pass_id: "{{RUN_ID}}",  // the run id, on every packet
+  intent: "docs" | "bugfix" | "feature-extend" | "feature-new" | "refactor" | "test" | "deps",  // brownfield only — omit entirely on greenfield packets
+  subtype: "nest_controller" | ...,  // optional brownfield stack hint
+  artifact_path: "src/auth.js"  // the project-relative path the packet writes; required in brownfield
 }
 ```
 
@@ -372,23 +504,41 @@ with `phase: <name>, task_type: "skipped"` so downstream summaries stay complete
 
 ## HITL gate prompt templates
 
-**Gate delivery.** You print the gate block yourself and wait for the user's reply. Every gate is
-a fenced `> ⏸ **HITL Gate <N> — <Title>**` block (templates below), printed verbatim. **Persist
-the gate-pending state to `.sdlc/local/state.json` before printing** — if the session dies
-mid-gate, session-hydrate detects a non-terminal state and re-prompts on the next
-`$mmo-codex:brownfield` invocation. No new command needed.
+**Gate delivery.** You print the gate block yourself, then follow the gate instruction you were
+given: in a session, the `gates:` line the start script printed; on the `run.mjs` route, the
+conductor prompt's "Approval gates" section. Never answer a gate on the user's behalf. Every gate
+is a fenced `> ⏸ **HITL Gate <N> — <Title>**` block (templates below), printed verbatim.
+**Persist the gate-pending state to `<output_dir>/state.json` before printing**, so a session that
+dies mid-gate leaves a record of the open gate in the run's own folder. Write the whole file, one
+object: `{"run_id": "{{RUN_ID}}", "phase": "<phase>", "gate": N, "status": "gate_pending", "at": "<ISO time>"}`.
+
+**Gate record.** On both routes, append every gate decision, Gate 0 included, as a new line to
+`{{OUTPUT_DIR}}/gates.jsonl` before you act on it, with the decision under the key `decision`
+(never `status`) and the time you write it under `ts`:
+
+```json
+{"gate": 1, "artifact": "requirements.md", "decision": "approved|revise|aborted|accepted|rejected|auto-approved", "note": "<one line>", "ts": "<ISO 8601 time>"}
+```
+
+In a session, write the line once the user has replied, or as you continue under
+`--gates=auto-approve`. Gate 4 records `accepted`, `auto-approved` or `rejected`. The end command
+in "Run logging" refuses `--outcome=completed` until the latest Gate 4 line in this file is
+`accepted` or `auto-approved` and Phase 9's command has run again after it. The brownfield close-out (`write-contract.mjs --close`) reads this
+file too and refuses while it holds neither an accepted Gate 4 nor an abort. On the `run.mjs`
+route the conductor prompt also has you record `pending` before you end your turn on a gate.
+Log each gate's opening and resolution as "Run logging" below says.
 
 ### Gate 0 — Brownfield only, before Gate 1
 
 > ⏸ **HITL Gate 0 — Discovery Confirmation**
 >
-> I read your repo and produced `<sdlc_root>/runs/<run-id>/discovery.md`. Confirm:
+> I read your repo and produced `<output_dir>/discovery.md`. Confirm:
 >
 > - **Stack:** `<top-detected stacks>` — correct? add/override?
 > - **Test command:** `<detected>` — enter to accept, or paste the command.
-> - **Policy:** `<the default_policy field setup wrote to .sdlc/project.json>` — accept, or
->   name another on-disk policy for this run only (e.g. `gpt-plus-flash`). To change the project's
->   persistent default, re-run setup (`node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs'`
+> - **Policy:** `{{POLICY}}`, the policy every dispatch in this run uses — accept, or name
+>   another on-disk policy (e.g. `gpt-plus-flash`) and the run restarts with it. To change the
+>   project's persistent default, re-run setup (`node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs'`
 >   — this is the one command that opens a browser; every other setup step is terminal-only).
 > - **Existing AI setup:** `<verbatim list from Tier 1 group 6>` — is any of this
 >   authoritative and off-limits? **(default: OFF-LIMITS, do not touch)**
@@ -396,8 +546,9 @@ mid-gate, session-hydrate detects a non-terminal state and re-prompts on the nex
 > - **File scope:**
 >   - allowlist: `<paths proposed by the intent brief>` — accept / edit
 >   - off-limits: **project defaults from `.sdlc/project.json.off_limits_default`** apply
->     (`.env*`, `.mcp.json`, `node_modules/**`, `.cursor/rules/**`, `.codex/config.toml`,
->     `.codex/auth.json`, `dist/**`, `.sdlc/**`, `.git/**`) — add anything else this ticket must not touch
+>     (`.env`, `.env.*`, `.mcp.json`, `.cursor/rules/**`, `.codex/config.toml`, `.codex/auth.json`,
+>     `node_modules/**`, `dist/**`, `build/**`, `.next/**`, `.sdlc/local/**`, `.git/**`,
+>     `.agents/**`) — add anything else this ticket must not touch
 >   - AI configs detected in the repo are added on top (see previous bullet)
 > - **Repo-state risks (if any):** `<LFS / submodules / failing tests / encrypted secrets>`
 > - **Regulated-repo warning (when `baseline.regulated_repo_warning_required`):** *"This repo appears regulated (signals: `<kinds>`). Confirm the active policy uses only compliant endpoints, and that off-limits protects your regulated data folders."*
@@ -407,14 +558,42 @@ mid-gate, session-hydrate detects a non-terminal state and re-prompts on the nex
 >
 > Reply: `approved`, `revise: <comments>`, or `abort`.
 
-On `approved`, freeze the write contract to `.sdlc/local/write-contract.json`
-(schema: `{schema_version:1, active:true, mode:"brownfield", run_id, strict:true, allowlist,
-off_limits}`). Build `off_limits` by concatenating `.sdlc/project.json.off_limits_default`
-(the project-level constants — `.env*`, `.mcp.json`, `node_modules/**`, etc., written by setup)
-with the AI-configs from `baseline.ai_configs_detected` and any ticket-specific paths the user
-added at Gate 0. The PreToolUse hook and the packet validator both read the merged list — the
-UX shrinks (Gate 0 doesn't re-ask about constants each ticket), the enforcement is unchanged.
-See `plugin/codex/hooks/write-contract-check.mjs` for the hook.
+On `approved`, freeze the write contract with `write-contract.mjs`, as step 5 of the brownfield
+guide, `{{OUTPUT_DIR}}/skills/brownfield-guide.md`, shows:
+
+```bash
+node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --freeze --run-id={{RUN_ID}} \
+  --allowlist='<allowlist JSON>' --off-limits='<extra off-limits JSON>' --intent=<intent> \
+  --project-root='{{PROJECT_ROOT}}'
+```
+
+Then update `intent_brief.md` with the final scope, and prove the write hook runs with a
+command of its own:
+
+```bash
+node '{{PLUGIN_ROOT}}/scripts/write-contract.mjs' --assert-guard-live --run-id={{RUN_ID}} --project-root='{{PROJECT_ROOT}}'
+```
+
+Never put the freeze and the check in one shell call. The hook judges a call once, before it
+runs, so a call that freezes and checks leaves no hook record after the freeze, and the check
+then ends the run as if the hook were not trusted.
+
+`--off-limits` carries the AI-configs from `baseline.ai_configs_detected` and any ticket-specific
+paths the user added at Gate 0; the script merges `.sdlc/project.json.off_limits_default` (the
+project-level constants written by setup) into the contract itself, so Gate 0 does not re-ask about
+them each ticket. Never write `.sdlc/local/write-contract.json` by hand. The write hook
+(`{{PLUGIN_ROOT}}/codex/hooks/write-contract-check.mjs`) refuses it while the run is live, and a
+contract changed after its freeze makes the hook refuse every write. If either command exits
+non-zero, print its message and stop. While the contract is live the run writes its own
+`.sdlc/runs/<run-id>/` folder and, outside it, only the allowlist.
+
+**Ending a brownfield run.** After the user accepts Gate 4 and its `accepted` line is in
+`gates.jsonl`, `write-contract.mjs --close --run-id={{RUN_ID}}` ends the run, closes its provenance
+record and switches the contract off, before the ledger rows are written. An abort at any gate
+appends that gate's `aborted` line, then runs `write-contract.mjs --abandon --run-id={{RUN_ID}}
+--reason='aborted at gate <N>'`. When `--close` refuses, print its message and stop: it names the
+`--abandon` command the user runs to end the run. Any other stop needs no contract command: the
+end record (see "Run logging") ends the contract with that outcome, and a resume puts it back.
 
 **Default the AI-coexistence answer to OFF-LIMITS.** A user who hits `approved` without reading
 must not accidentally authorize the harness to rewrite their `.cursor/rules` or their custom
@@ -438,9 +617,78 @@ explicitly.
 
 ### Gate 4
 > ⏸ **HITL Gate 4 — Final Acceptance**
-> The full SDLC pass is complete.
-> Total cost: $X.XX  ·  Files: N  ·  Tests: passing/total
+> The full SDLC pass is complete. The summary is `<output_dir>/SUMMARY.md`.
+> Dispatched cost: $X.XXXX  ·  Files: N  ·  Tests: passing/total
 > Reply `accept` to finalize the manifest, or `reject: <comments>` to revise.
+
+Take the figures from `manifest.json`: `totals.dispatched_cost_usd`, and `artifacts.files` (print
+`—` when the manifest has no `artifacts`).
+
+On `accept`, record the gate, finish any close-out your playbook gives (the brownfield guide's step
+7), then run the Phase 9 command again with `--status=accepted` added. When the gate instruction has
+you record Gate 4 as `auto-approved`, add `--status=auto-approved` instead. On a run started by
+`run.mjs`, that re-run is the run's last record; end your turn after it. On a run started in a
+session, record the end next, as "Run logging" below says. On `reject: <comments>`, revise what the
+comments name, and run Phase 9 again before you reopen Gate 4.
+
+---
+
+## Run logging
+
+The run's log is `{{OUTPUT_DIR}}/orchestrator.log`. The bridge logs each dispatch there itself; you
+add the phase boundaries, the gates, and on a run started in a session, the end of the run.
+
+**Phase boundaries.** At the start and end of each phase you run (`requirements_analysis`,
+`architecture_design`, `plan_task_packets`, `execute_packets`, `senior_code_review`, `test_run`,
+`security_review`, `generate_final_report`, plus `discovery` and `change_plan` in brownfield):
+
+```bash
+node '{{PLUGIN_ROOT}}/scripts/mmo-log.mjs' --event=phase.start --run-dir='{{OUTPUT_DIR}}' --run-id={{RUN_ID}} --phase=<phase>
+node '{{PLUGIN_ROOT}}/scripts/mmo-log.mjs' --event=phase.end --run-dir='{{OUTPUT_DIR}}' --run-id={{RUN_ID}} --phase=<phase>
+```
+
+A phase the intent matrix marks SKIP gets `--event=phase.skip --phase=<phase> --reason=<matrix
+cell>` instead of the pair.
+
+**Gates.** When you print a gate block, and again once its decision line is in `gates.jsonl`:
+
+```bash
+node '{{PLUGIN_ROOT}}/scripts/mmo-log.mjs' --event=gate.open --run-dir='{{OUTPUT_DIR}}' --run-id={{RUN_ID}} --gate=<N>
+node '{{PLUGIN_ROOT}}/scripts/mmo-log.mjs' --event=gate.resolved --run-dir='{{OUTPUT_DIR}}' --run-id={{RUN_ID}} --gate=<N> --decision=<decision>
+```
+
+`<decision>` is the value you wrote under `decision`. A `pending` line is not a resolution: log
+`gate.resolved` once the answer is recorded. `gates.jsonl` stays the gate record; these lines put
+each gate in the log's timeline.
+
+**The end of the run.** Who records it depends on how the run started:
+
+- **Started by `run.mjs`** (the run folder holds `driver-events.jsonl`): the driver logs `run.start`
+  and `run.end` itself. Record why you stopped the way the conductor prompt says; do not run the
+  command below.
+- **Started from a `$mmo-codex:*` skill in a session** (the run folder holds `run.json`): the start
+  script logged `run.start`. Record the end with:
+
+```bash
+node '{{PLUGIN_ROOT}}/codex/end-run.mjs' --run-dir='{{OUTPUT_DIR}}' --outcome=<outcome> --reason='<one line>'
+```
+
+| Outcome | When |
+|---|---|
+| `completed` | Gate 4 is recorded as `accepted` in `gates.jsonl`, and Phase 9's command has run again with `--status=accepted` since. The script refuses `completed` otherwise. |
+| `aborted` | A gate was answered `abort`, or the user stopped the run. |
+| `halted` | Preflight returned `ok: false`, or a pre-check step failed. |
+| `refused` | The write guard refused a write, and you stopped as the rules say. |
+| `cost_cap` | A dispatch failed with `COST_CAP_EXCEEDED`. |
+| `stopped` | Any other deliberate stop, such as setup not done for this project. |
+| `failed` | An error the run could not get past. |
+
+Every outcome but `completed` needs `--reason`. Run it once Gate 4 is accepted and Phase 9's command
+has run again, before the final report, or right after you tell the user why the run stopped. Its `Cost report:` line gives the
+cost report command for the run folder, or says this install has none; then build the breakdown
+from `{{OUTPUT_DIR}}/telemetry.jsonl`. Running the same command again keeps the recorded end and
+repeats only the run-end steps. A Gate 4 `reject` sends the run back for changes; it does not end
+the run.
 
 ---
 
@@ -463,7 +711,7 @@ Event shape:
 {
   "ts": "ISO-8601",
   "pass": "pass1|pass2",
-  "phase": "<state>",
+  "phase": "<phase>",
   "task_type": "<from packet>",
   "task_id": "<from packet>",
   "module": "<from packet>",
@@ -482,11 +730,13 @@ Event shape:
 }
 ```
 
-**Your own loop cost is recorded for you.** The driver reads the `codex exec --json` event stream
-after the run and derives the conductor's token usage from it, writing those events with
-`provenance: "modeled"` — modeled from token counts at the pinned rates, because this runtime
-reports no wallet figures. Never invent token counts or cost for your own work: a guessed figure
-sitting beside measured ones is worse than no figure.
+**Your own loop cost is recorded for you, on both routes.** On the `run.mjs` route the driver records the
+`codex exec --json` event stream as it arrives and derives the conductor's token usage from it. On the
+interactive route the run's end step (`end-run.mjs`) reads your token usage from codex's session file
+for this session. Either way the figure is `provenance: "modeled"` — token counts at the dated price
+list's rates, because this runtime reports no wallet figures — and lands in `driver-usage.json` and the
+cost report. Never invent token counts or cost for your own work: a guessed figure sitting beside
+measured ones is worse than no figure.
 
 **But a phase that made no model call must still leave a row.** Two cases produce one:
 
@@ -499,10 +749,10 @@ lost event and never an ambiguous one:
 
 ```bash
 node '{{PLUGIN_ROOT}}/codex/dispatch.mjs' \
-  --log-phase=<state> --task-type=skipped|in_session \
+  --log-phase=<phase> --task-type=skipped|in_session \
   --module=<module> --reason='<why in one line>' \
   --policy={{POLICY}} --telemetry='{{OUTPUT_DIR}}/telemetry.jsonl' \
-  --out='{{OUTPUT_DIR}}/<state>-skip-receipt.json'
+  --out='{{OUTPUT_DIR}}/<phase>-skip-receipt.json'
 ```
 
 These carry `provenance: "none"` and all-zero tokens. That is not an estimate — it is the fact
@@ -512,4 +762,4 @@ already counted in the driver-loop events; the `--reason` string is what tells a
 A run that writes `review.json` or `security_review.md` without either dispatching a packet or
 logging one of these is under-reporting itself.
 
-**Pricing constants come from the loaded policy YAML's `pricing:` block for the current model — never from your trained knowledge, never hardcoded.** If the policy's pricing block is missing, abort the run.
+**Rates come from the dispatch server's dated price list (`plugin/mcp/model-dispatch/src/prices.ts`) — never from your trained knowledge, never hardcoded.** A policy YAML's `pricing:` block records the list's card and is billed only under `pricing_override: true`. `preflight_dispatch` halts on a model the list cannot price; stop the run when it does.

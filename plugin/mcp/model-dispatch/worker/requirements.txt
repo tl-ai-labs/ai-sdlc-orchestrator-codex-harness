@@ -2,9 +2,10 @@
 # `antigravity-worker` adapter. Installed into a dedicated virtualenv by
 # verify-setup.mjs --enable-agent.
 
-# Floor, not exact pin: the worker records `sdk_version` in every usage sidecar,
-# so a newer SDK is visible in the evidence.
-google-antigravity>=0.1.7
+# Exact pin. The SDK changed what its usage totals mean between releases, so
+# raise this pin only after adding the new version to AGY_USAGE_SEMANTICS in
+# src/delegation/workerProcess.ts.
+google-antigravity==0.1.16
 
 # Requires Python >= 3.10. macOS ships /usr/bin/python3 as 3.9;
 # verify-setup.mjs resolves an explicit >= 3.10 interpreter by version-suffixed

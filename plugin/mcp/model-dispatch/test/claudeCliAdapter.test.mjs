@@ -14,7 +14,7 @@ const BASE_CONFIG = {
   id: "sonnet-cli",
   adapter: "claude-cli",
   model_name: "claude-sonnet-5",
-  pricing: { input: 3, input_cached: 0.3, output: 15 },
+  pricing: { input: 2, input_cached: 0.2, output: 10 },
 };
 
 const PACKET = {

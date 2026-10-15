@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "active": true,
+  "mode": "brownfield",
+  "run_id": "bf5-20261014-154246",
+  "strict": true,
+  "allowlist": [
+    "src/auth.js",
+    "src/index.js",
+    "src/auth.spec.js"
+  ],
+  "off_limits": [
+    ".env",
+    ".env.*",
+    ".mcp.json",
+    ".cursor/rules/**",
+    ".codex/config.toml",
+    ".codex/auth.json",
+    "node_modules/**",
+    "dist/**",
+    "build/**",
+    ".next/**",
+    ".sdlc/local/**",
+    ".git/**",
+    ".agents/**",
+    "package.json",
+    ".run-id"
+  ],
+  "frozen_at": "2026-10-14T10:18:47.156Z"
+}

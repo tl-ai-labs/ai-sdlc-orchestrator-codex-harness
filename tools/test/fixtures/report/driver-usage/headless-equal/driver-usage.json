@@ -1,0 +1,329 @@
+{
+  "schema_version": 1,
+  "route": "headless",
+  "source": "session-file",
+  "cost_source": "session file + exec stream (every invocation equal)",
+  "verified": true,
+  "provenance": "modeled",
+  "thread_ids": [
+    "019a0000-0000-7000-8000-0000000000a1"
+  ],
+  "threads": [
+    {
+      "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+      "rollout": "found",
+      "rollout_file": "sessions/2026/10/13/rollout-2026-10-13T10-00-00-019a0000-0000-7000-8000-0000000000a1.jsonl",
+      "reason": null,
+      "booked_from": "session-file",
+      "usage_series": "token_usage_record",
+      "originator": "codex_exec",
+      "source": "exec",
+      "cli_version": "0.160.1",
+      "plan_type": null,
+      "window": {
+        "start": "2026-10-13T10:00:00.995Z",
+        "end": "2026-10-13T10:00:02.105Z",
+        "start_anchor": "invocation_start",
+        "end_anchor": "invocation_end",
+        "exact": true,
+        "lower_bound": false,
+        "provisional": false
+      }
+    }
+  ],
+  "window": {
+    "start": "2026-10-13T10:00:00.995Z",
+    "end": "2026-10-13T10:00:02.105Z",
+    "start_anchor": "invocation_start",
+    "end_anchor": "invocation_end",
+    "exact": true,
+    "lower_bound": false,
+    "provisional": false
+  },
+  "pin": {
+    "model": "gpt-5.6-terra",
+    "effort": "high"
+  },
+  "policy": {
+    "name": "gpt-plus-flash",
+    "version": 1
+  },
+  "turns": [
+    {
+      "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+      "turn_id": "turn-0001-019a0000",
+      "invocation": 1,
+      "usage_source": "session-file",
+      "model": "gpt-5.6-terra",
+      "effort": "high",
+      "started_at": "2026-10-13T10:00:01.000Z",
+      "ended_at": "2026-10-13T10:00:01.050Z",
+      "ended_by": "complete",
+      "requests": 1,
+      "compaction_requests": 0,
+      "web_search_calls": 0,
+      "tokens": {
+        "input_tokens": 40000,
+        "cached_input_tokens": 30000,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2000,
+        "reasoning_output_tokens": 500
+      },
+      "cost_usd": 0.05,
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
+    },
+    {
+      "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+      "turn_id": "turn-0002-019a0000",
+      "invocation": 2,
+      "usage_source": "session-file",
+      "model": "gpt-5.6-terra",
+      "effort": "high",
+      "started_at": "2026-10-13T10:00:02.050Z",
+      "ended_at": "2026-10-13T10:00:02.100Z",
+      "ended_by": "complete",
+      "requests": 1,
+      "compaction_requests": 0,
+      "web_search_calls": 0,
+      "tokens": {
+        "input_tokens": 60000,
+        "cached_input_tokens": 50000,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 3000,
+        "reasoning_output_tokens": 800
+      },
+      "cost_usd": 0.066,
+      "unpriced_reason": null,
+      "price_tier": "standard",
+      "long_context_requests": 0
+    }
+  ],
+  "tokens": {
+    "input_tokens": 100000,
+    "cached_input_tokens": 80000,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 5000,
+    "reasoning_output_tokens": 1300,
+    "requests": 2,
+    "compaction_requests": 0,
+    "web_search_calls": 0
+  },
+  "cost_usd_modeled": 0.116,
+  "cost_complete": true,
+  "unpriced": [],
+  "cross_check": {
+    "verdict": "equal",
+    "verified": true,
+    "mapping": "invocation_window",
+    "threads": [
+      {
+        "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+        "verdict": "equal",
+        "exec_stream_baseline": "zero",
+        "session_tokens": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 1300
+        },
+        "exec_stream_tokens": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 1300
+        },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "incomplete_turns": 0,
+        "incomplete_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "unreported_invocations": 0,
+        "token_count_reset": false,
+        "gap": null
+      }
+    ],
+    "invocations": [
+      {
+        "invocation": 1,
+        "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+        "turn_id": "turn-0001-019a0000",
+        "exec_cumulative": {
+          "input_tokens": 40000,
+          "cached_input_tokens": 30000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2000,
+          "reasoning_output_tokens": 500
+        },
+        "session_total": {
+          "input_tokens": 40000,
+          "cached_input_tokens": 30000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2000,
+          "reasoning_output_tokens": 500
+        },
+        "exec_delta": {
+          "input_tokens": 40000,
+          "cached_input_tokens": 30000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2000,
+          "reasoning_output_tokens": 500
+        },
+        "session_turn_tokens": {
+          "input_tokens": 40000,
+          "cached_input_tokens": 30000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 2000,
+          "reasoning_output_tokens": 500
+        },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "carried_invocations": [],
+        "carried_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "status": "equal"
+      },
+      {
+        "invocation": 2,
+        "thread_id": "019a0000-0000-7000-8000-0000000000a1",
+        "turn_id": "turn-0002-019a0000",
+        "exec_cumulative": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 1300
+        },
+        "session_total": {
+          "input_tokens": 100000,
+          "cached_input_tokens": 80000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 5000,
+          "reasoning_output_tokens": 1300
+        },
+        "exec_delta": {
+          "input_tokens": 60000,
+          "cached_input_tokens": 50000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 3000,
+          "reasoning_output_tokens": 800
+        },
+        "session_turn_tokens": {
+          "input_tokens": 60000,
+          "cached_input_tokens": 50000,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 3000,
+          "reasoning_output_tokens": 800
+        },
+        "difference": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "compaction_requests": 0,
+        "compaction_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "carried_invocations": [],
+        "carried_tokens": {
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 0,
+          "reasoning_output_tokens": 0
+        },
+        "status": "equal"
+      }
+    ],
+    "session_tokens": {
+      "input_tokens": 100000,
+      "cached_input_tokens": 80000,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 5000,
+      "reasoning_output_tokens": 1300
+    },
+    "exec_stream_tokens": {
+      "input_tokens": 100000,
+      "cached_input_tokens": 80000,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 5000,
+      "reasoning_output_tokens": 1300
+    },
+    "exec_stream_baseline": {
+      "019a0000-0000-7000-8000-0000000000a1": "zero"
+    },
+    "exec_stream_cost_usd": 0.116,
+    "compaction_requests": 0,
+    "compaction_tokens": {
+      "input_tokens": 0,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_output_tokens": 0
+    },
+    "incomplete_invocations": 0,
+    "incomplete_turns": 0,
+    "incomplete_tokens": {
+      "input_tokens": 0,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_output_tokens": 0
+    },
+    "unreported_invocations": 0,
+    "missing_invocations": 0,
+    "token_count_reset": false,
+    "gap": null,
+    "missing_threads": [],
+    "unchecked_threads": []
+  },
+  "excluded_threads": [],
+  "tier_unverified_turns": 0,
+  "price_list_verified": "2026-10-13",
+  "collected_at": "2026-10-13T11:00:00.000Z"
+}

@@ -24,23 +24,11 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_SERVER_ENTRY = join(dirname(fileURLToPath(import.meta.url)), "server.js");
 
 /**
- * How long to let one bridge tool call run before giving up.
- *
- * This MUST exceed the largest `worker_timeout_sec` any shipped policy sets,
- * or the client abandons a call the adapter is still working on. The MCP SDK
- * defaults to 60s, which is far below what a real dispatch takes: the
- * `codex-cli` adapter shells out to a nested `codex exec` at
- * `model_reasoning_effort=high` and `gpt-seat-plus-flash` allows it 540s.
- *
- * That mismatch is not theoretical — it killed the first Workforce Ops
- * reference run. Both requirements dispatches failed with
- * `MCP error -32001: Request timed out` at 60s while the adapter kept working
- * for another eight minutes, and the conductor correctly refused to author
- * substitute content, so the run halted before Gate 1 having produced
- * nothing. The symptom is badly misleading: it reads as a vendor or
- * connectivity failure, but preflight passes and the model is answering fine.
- *
- * 900s = 540s policy ceiling + headroom for process spawn and JSON handling.
+ * How long to let one bridge tool call run before giving up. It has to exceed
+ * the longest adapter deadline: a leaf's worker_timeout_sec (840 s by default
+ * for completion and codex-cli leaves), plus the agent worker's 30 s kill
+ * grace. The MCP SDK's own default is 60 s. A call that outlives this is
+ * recorded by the bridge as an abandoned attempt, booked as an estimate.
  */
 export const DEFAULT_TOOL_TIMEOUT_MS = 900_000;
 

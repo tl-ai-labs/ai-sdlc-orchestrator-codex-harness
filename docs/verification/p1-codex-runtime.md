@@ -49,7 +49,7 @@ setup docs either way.
 | 8 | Dispatch one Gemini packet through the bridge | **PENDING** — needs Vertex ADC or `GEMINI_API_KEY` (Q13(c) in the track doc) | Mechanical tier |
 | 9 | Spawn a subagent | **INCONCLUSIVE — live.** `multi_agent` is wired: a `collab_tool_call` item type exists and fired (`tool: "wait"`). But the spawn itself failed in headless `exec` mode — `stderr`: `collab spawn failed: no thread with id: <thread_id>` — and the model answered the test question directly rather than proving real delegation. Native subagent hosting is not provably usable from `codex exec` on this version; the fallback (fold agent roles into the driver prompt, dispatch every model call through the bridge) is the safer default, consistent with the track doc's D1 note that bridge-dispatch is required regardless | Role hosting mechanism |
 | 10 | Fresh session vs. install session registration | **PASS — reasoned, not a live re-test.** `codex doctor` reports the background app-server as "not running (ephemeral mode)" — there is no long-lived daemon in the default setup. Every `codex`/`codex exec` invocation is a fresh process that reads `config.toml` at start. This is structurally the opposite of the source Claude Code harness's failure mode (where a running interactive session doesn't pick up plugin registration until restarted) — there is no "install session vs. fresh session" distinction to fail here, because there is no persistent session to begin with | No silent premium-model cost failure from stale registration |
-| 11 | Compare driver pricing against published rates | **PENDING** (gates P5 only) | Pricing pins |
+| 11 | Compare driver pricing against published rates | **PASS 2026-10-13** (OpenAI page: 2.00 / 0.20 / 12.00) | Pricing pins |
 
 ## Check 4 — MCP tools registered via `config.toml` are NOT reachable from `codex exec` on 0.151.0 (CRITICAL, 2026-08-31)
 
@@ -311,6 +311,61 @@ cheap way to build the fairness-pin assertion's *rejection* path — pass the pi
 on every call and trust the CLI to hard-fail on drift, since the stream can't positively confirm
 which model answered a *successful* call (see check 7 above).
 
+## The session's own rollout records the model and effort (codex 0.160.1, 2026-10-13)
+
+Narrows check 7's caveat. Run against a localhost mock provider with a temporary `CODEX_HOME`,
+`codex exec` writes a `turn_context` record to
+`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<local time>-<thread id>.jsonl` before the turn's first
+tool call. Its payload carries `model`, and `effort` when one is set (also
+`collaboration_mode.settings.reasoning_effort`). With no effort set the record has none, and the
+request uses the model's `default_reasoning_level` from `models_cache.json` (`medium` for
+`gpt-5.6-terra`). Commands the model runs get `CODEX_THREAD_ID` and `CODEX_SESSION_ID` (the same
+value) and inherit codex's own environment. `plugin/codex/session-model.mjs` reads this to check an
+interactive session against the driver pin, and `start-run.mjs` starts no run unless they match.
+The rollout records the model requested, not proof of the model that answered.
+
+## The plugin's write hook, wired both ways (codex 0.160.1, 2026-10-13)
+
+Run against a localhost mock provider, at $0, with a temporary `CODEX_HOME` whose path has a space
+in it. The plugin was installed with `codex plugin add mmo-codex@tilicho-ai-labs` from a local
+marketplace whose path also has a space, so the hook ran from
+`<CODEX_HOME>/plugins/cache/tilicho-ai-labs/mmo-codex/0.2.0`. Each mock turn asked for an
+`apply_patch` Add File of `.env.local` (refused in every session) and a shell `ls`.
+
+| Wiring | `codex exec` flags | Result |
+|---|---|---|
+| The installed plugin alone (the interactive shape) | `--dangerously-bypass-hook-trust -c features.hooks=true` | Refused; one `guard-decisions.jsonl` row, `wired_by: plugin`. `${PLUGIN_ROOT}` in `hooks.json` resolved to the cache path with its space. |
+| `run.mjs`'s `hookArgs(<install root>)` | session wiring, `hooks.state` switch-off, `features.hooks=true` | Refused; one row, `wired_by: run`. The plugin's copy did not fire. |
+| The bridge's nested worker | `-c hooks.state={"mmo-codex@tilicho-ai-labs:hooks/hooks.json:pre_tool_use:0:0"={enabled=false}}` | No hook ran; no row. |
+| Gate 0's guard check through the plugin hook | the plugin alone, after `write-contract.mjs --freeze` | `--assert-guard-live` found the row its own call left (`allow`, `wired_by: plugin`, the run's id) and passed. |
+
+A second check drove this branch's `run.mjs` (brownfield, `--gates=auto-approve`,
+`--max-turns=1`) against the same mock. The conductor froze the contract, passed the guard check,
+had a write outside the allowlist refused and one inside it allowed. The run ended `refused`, and
+its end switched the contract off (`end_outcome: refused`). `--resume` reopened it, an allowed write
+landed under it, and the run end at `max_turns` switched it off again. `provenance.json` held both
+written files, recorded by the hook.
+
+### What a PreToolUse reply may say (codex 0.160.1, 2026-10-14)
+
+Checked through `codex app-server`, the protocol the TUI uses, with the plugin installed and its
+hook trusted, against the same localhost mock: one turn ran a shell `ls`, an `apply_patch` Add File
+of `new3.txt` and one of `.env.local`. `codex exec --json` carries no hook items, so only the
+app-server shows how Codex rates each hook run.
+
+| Reply on stdout | `hook/completed` status |
+|---|---|
+| Nothing (exit 0), the write hook's allow | `completed`, no entries |
+| `{}`, or `hookSpecificOutput` with no decision | `completed`, no entries |
+| `permissionDecision: "deny"` with a reason | `blocked`; the call does not run |
+| `permissionDecision: "allow"` alone | `failed`, error entry `PreToolUse hook returned unsupported permissionDecision:allow`; the call runs |
+| `permissionDecision: "ask"` | `failed`, error entry `PreToolUse hook returned unsupported permissionDecision:ask`; the call runs |
+
+The binary also carries `PreToolUse hook returned updatedInput without permissionDecision:allow`,
+so `allow` is accepted only together with `updatedInput`. The write hook replies with nothing to
+allow a call and keeps the JSON form for `deny`; the TUI shows a "Hook failed" cell for every
+`failed` run.
+
 ## Pins chosen (Document B §8, Document A P1′ exit criterion)
 
 Selected 2026-08-31 after check 7 (reasoning effort) and the sandbox/approval probes below, all
@@ -517,6 +572,18 @@ capped by `--max-turns` (default 12). Three details that matter:
 - **A resumed turn keeps the pin, the sandbox and the write-contract hook.** One that dropped the
   hook would write unguarded; one that dropped the pin would answer on a different model.
 
+**Superseded (2026-10-14).** The first two bullets describe the 2026-09-01 driver. A run now
+completes only when all three hold: the latest Gate 4 line accepts it, `write-manifest.mjs` wrote
+`SUMMARY.md` since the run began, and Phase 9's command ran again after Gate 4 with
+`--status=accepted` or `--status=auto-approved` (`completionEvidence` in
+`plugin/codex/run-record.mjs`). The conductor writes neither `manifest.json` nor `SUMMARY.md`
+itself; `manifest.json` records the summary's sha256, so a hand-written or edited `SUMMARY.md`
+does not count. On codex 0.160.1 each `turn.completed` reports the thread's running total, kept
+across `exec resume`, so the last invocation's stdout already holds the thread's whole token
+count. The driver prices each turn as the difference from the thread's previous total; adding up
+every turn's figure would bill earlier turns twice. See [methodology.md](../methodology.md). The
+events of earlier turns are still kept, in `driver-events.jsonl`.
+
 The manifest gained `codex_invocations` (how many times the driver called codex, distinct from
 `driver_turns`) and `completed` (whether the pipeline actually reached its final phase), because
 a run that exhausts its turns still exits 0 with useful artifacts and must not be mistaken for a
@@ -552,10 +619,18 @@ the rule protects is unchanged, and each part was verified against the real hook
 
 | Case | Decision |
 | --- | --- |
-| `cp .env.test .env`, greenfield, no `.env` present | allow |
+| `cp .env.test <project root, absolute>/.env`, or an `apply_patch` Add File of `.env`, greenfield, no `.env` present | allow |
+| `cp .env.test .env` with a relative target, greenfield, no `.env` present | **deny** — see the note below |
 | same, but `.env` already exists | **deny** — a real `.env` is never overwritten |
 | `.env.production`, `.env.local` | **deny** — variants stay blocked |
 | `cp .env.test .env` under an active brownfield contract | **deny** |
+
+**Superseded (2026-10-13).** On 2026-09-02 the relative `cp .env.test .env` was allowed. The hook
+now gives the allowance only where it knows the folder the file lands in: a shell target written
+as a literal absolute path, or an `apply_patch` Add File, whose paths Codex resolves against the
+payload's `cwd`. A relative shell path may land elsewhere, because the shell tool's `workdir` is
+not in the hook payload. `plugin/skills/pipeline/SKILL.md` phase 7 now copies to the absolute
+path: `if [ -f .env.test ] && [ ! -f .env ]; then cp .env.test <that folder, absolute>/.env; fi`.
 
 Brownfield never reaches this branch at all (it has a contract), and its own phase 7 refuses the
 copy outright, so the path that guards a user's real secrets is untouched. What is now permitted
@@ -565,7 +640,7 @@ is a greenfield run creating a throwaway fixture inside the tree it just generat
 
 1. Vertex ADC or `GEMINI_API_KEY` — unblocks check 8 (mechanical-tier dispatch) and the Gemini
    region pin. Not yet provisioned (track doc Q13(c)); does not block P2–P4 offline work.
-2. Re-verify the `gpt-5.6-terra` pricing pin against OpenAI's published rates — gates P5 only.
+2. ~~Re-verify the `gpt-5.6-terra` pricing pin against OpenAI's published rates.~~ Done 2026-10-13.
 3. Re-test the web-search hook-invisibility finding on `0.151.0` with a prompt engineered to
    actually trigger hosted search — folded into P4's audit-flag work rather than done standalone.
 4. ~~Live MCP tool-namespacing test, once the real `model-dispatch` server is wired in P3.~~

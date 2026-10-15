@@ -87,11 +87,10 @@ var to be present at boot. Discovery already recorded env-var references in
 `baseline.env_keys_by_file` and `baseline.env_keys_referenced_in_code`. When a codegen packet
 introduces a new required env var:
 
-1. Add it to `.env.example` (via `existing_file_edit` with append semantics — never overwrite)
-2. **Never** modify `.env` — that's off-limits and belongs to the user
-3. Add it to `.env.test` if that file exists in the repo AND `intent ∈ (feature-new,
-   feature-extend)`. Otherwise the test-runner probe (§7.4 step 2) will report the missing key
-   and Gate 0 informs the user.
+1. **Never** write `.env`, `.env.example`, `.env.test` or any other `.env*` file — the write hook
+   refuses every one of them while the run's contract is live, and `.env` belongs to the user
+2. Name the new key, and a schema-valid test value for it, in the packet's result, so Phase 7's
+   env mini-gate (pipeline SKILL.md) lists it for the user to add to `.env.example` and `.env.test`
 
 ## Test-runner (Nest)
 

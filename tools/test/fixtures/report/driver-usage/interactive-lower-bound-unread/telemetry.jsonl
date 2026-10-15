@@ -1,0 +1,1 @@
+{"ts":"2026-10-13T10:00:30.000Z","pass":"interactive-lower-bound-unread","phase":"codegen","task_type":"x","task_id":"t1","model":"gemini-3.7-flash","provenance":"vendor","routing":{"policy_name":"gpt-plus-flash"},"input_tokens":1000,"input_tokens_cached":0,"output_tokens":100,"cost_usd":0.05,"success":true}

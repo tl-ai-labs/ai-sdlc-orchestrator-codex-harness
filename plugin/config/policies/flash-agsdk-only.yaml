@@ -2,26 +2,41 @@
 # Gemini 3.7 Flash via the Antigravity SDK agent adapter.
 #
 # IMPORTANT: the conductor's OWN turns (planning, tool-calling, gate answers)
-# run on the pinned GPT model inside `codex exec`, not on Flash. Only the
-# dispatched `execute_with_model` calls this policy governs route to Flash.
-# Those driver turns are reported as modeled driver-loop cost, kept in a
-# separate section and never summed with the dispatched total — see
-# docs/methodology.md.
+# run on the GPT model pinned in `driver:` below, inside `codex exec`, not on
+# Flash. Only the dispatched `execute_with_model` calls this policy governs
+# route to Flash, so a run needs ADC and a codex login, and no OPENAI_API_KEY.
+# The driver turns are reported as modeled driver-loop cost in their own
+# section; the report's run total adds them to the dispatched total and keeps
+# them out of the vendor-metered total — see docs/methodology.md.
 version: 1
 name: flash-agsdk-only
+
+# The conductor's pin: run.mjs passes -m and the effort from here to codex exec,
+# and start-run.mjs starts no run in a codex session on another model or effort.
+# Its modeled cost is priced from the dated price list (src/prices.ts); the
+# pricing block below documents that rate, and a test holds it to the list.
+# Not a models[] entry, because it is never dispatched and preflight would
+# demand its credential. The same in every runnable policy, so a comparison
+# between policies holds it constant.
+driver:
+  model_name: gpt-5.6-terra
+  reasoning: { effort: high }
+  pricing: { input: 2.00, input_cached: 0.20, output: 12.00 }
+  pricing_source: https://platform.openai.com/docs/pricing
+  pricing_last_verified: 2026-10-13
 
 models:
   - id: flash
     adapter: antigravity-worker
     model_name: gemini-3.7-flash
     display_name: gemini-3.7-flash (Antigravity agent)
-    # TODO(pricing): confirm Gemini 3.7 Flash rates. Values below carried over
-    # from gemini-3.5-flash as a placeholder. Vertex adds +10% on REGIONAL
-    # endpoints; the geminiTransports.ts::applyVertexSurcharge applies it at
-    # dispatch — do not hand-edit x1.10 in.
-    pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
+    # Introductory rate through 2026-12-31. The price list (src/prices.ts) bills
+    # 1.50 / 0.15 / 7.50 from 2027-01-01; update this documentation block then.
+    # Vertex adds +10% on REGIONAL endpoints; geminiTransports.ts::applyVertexSurcharge
+    # applies it at dispatch — do not hand-edit x1.10 in.
+    pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-19
+    pricing_last_verified: 2026-10-12
     # `region:` unpinned so this leaf follows GOOGLE_CLOUD_LOCATION and hits
     # the flat global endpoint by default. Vertex-only: the Antigravity SDK is
     # ADC-only and has no API-key door, so no `auth:` block.

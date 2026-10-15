@@ -3,9 +3,9 @@
 # instead of a metered OPENAI_API_KEY. Same model, same effort pin, same rules.
 #
 # WHAT YOU GIVE UP. Codex reports token counts but no cost figure at all, so
-# every judgment-tier cost here is MODELED from tokens at the rates below,
-# not metered. Telemetry labels those events `provenance: "modeled"` and the
-# run report keeps them out of the vendor total. The numbers are useful; they
+# every judgment-tier cost here is MODELED from tokens at the dated price
+# list's rates (src/prices.ts), not metered. Telemetry labels those events
+# `provenance: "modeled"` and the run report keeps them out of the vendor total. The numbers are useful; they
 # are not a bill, and they should not be published as one.
 #
 # WHEN TO USE WHICH. Use gpt-plus-flash for anything whose cost figures get
@@ -22,24 +22,36 @@
 version: 1
 name: gpt-seat-plus-flash
 
+# The conductor's pin: run.mjs passes -m and the effort from here to codex exec,
+# and start-run.mjs starts no run in a codex session on another model or effort.
+# Its modeled cost is priced from the dated price list (src/prices.ts); the
+# pricing block below documents that rate, and a test holds it to the list.
+# Not a models[] entry, because it is never dispatched and preflight would
+# demand its credential. The same in every runnable policy, so a comparison
+# between policies holds it constant.
+driver:
+  model_name: gpt-5.6-terra
+  reasoning: { effort: high }
+  pricing: { input: 2.00, input_cached: 0.20, output: 12.00 }
+  pricing_source: https://platform.openai.com/docs/pricing
+  pricing_last_verified: 2026-10-13
+
 models:
   - id: gpt
     adapter: codex-cli
     model_name: gpt-5.6-terra
-    # Pinned in docs/verification/p1-codex-runtime.md (Document B section 8).
-    # A mismatch here must abort the run — see the fairness-pin assertion (P4).
+    # The judgment worker's effort. The conductor's pin is `driver:` above.
     reasoning: { effort: high }
-    # D4 pins, dated 2026-08-09. Re-verify against OpenAI's published rates
-    # before the first paid run (Document A P1' / port track section 6, P5
-    # gate) — this does not block P2-P4.
+    # Verified 2026-10-13 against OpenAI's pricing page: 2.00 / 0.20 / 12.00 per 1M.
+    # A request over 272,000 input tokens bills 4.00 / 0.40 / 18.00 (src/prices.ts).
     pricing: { input: 2.00, input_cached: 0.20, output: 12.00 }
     pricing_source: https://platform.openai.com/docs/pricing
-    pricing_last_verified: 2026-08-09
+    pricing_last_verified: 2026-10-13
     # No auth block: the codex CLI's own seat login backs this call.
     # TODO(ceiling): no published absolute output-token ceiling confirmed for
-    # gpt-5.6-terra as of this port. 32000 is a placeholder matching the
-    # carried Anthropic policies' Opus ceiling, not a researched GPT-5.6
-    # figure — confirm before P5 and correct here.
+    # gpt-5.6-terra as of this port. 32000 is a placeholder carried over from
+    # the Claude harness's judgment tier, not a researched GPT-5.6 figure —
+    # confirm before P5 and correct here.
     max_output_tokens_absolute: 32000
 
   # Gemini 3.7 Flash as a MODEL. One completion call per packet.
@@ -50,11 +62,11 @@ models:
     # Flat global/AI-Studio rates. Vertex adds +10% on every token class for
     # REGIONAL endpoints (Gemini 3+, effective 2026-07-01). Do not hand-edit a
     # x1.10 in — geminiTransports.ts::applyVertexSurcharge does it at dispatch.
-    # TODO(pricing): confirm Gemini 3.7 Flash rates — carried from
-    # opus-plus-flash-v37.yaml, itself a gemini-3.5-flash placeholder.
-    pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
+    # Introductory rate through 2026-12-31. The price list (src/prices.ts) bills
+    # 1.50 / 0.15 / 7.50 from 2027-01-01; update this documentation block then.
+    pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-19
+    pricing_last_verified: 2026-10-12
     # AI Studio door. Unset → adapter falls through to Vertex ADC, same rates.
     auth: { env: GEMINI_API_KEY }
     max_output_tokens_absolute: 8192
@@ -67,9 +79,9 @@ models:
     adapter: antigravity-worker
     model_name: gemini-3.7-flash
     display_name: gemini-3.7-flash (Antigravity agent)
-    pricing: { input: 1.50, input_cached: 0.15, output: 9.00 }
+    pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-19
+    pricing_last_verified: 2026-10-12
     # `region:` deliberately unpinned so this leaf follows GOOGLE_CLOUD_LOCATION
     # and hits the flat global endpoint by default, same as flash-completion.
     # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so
@@ -115,6 +127,13 @@ rules:
     use: gpt
     reason: "Judgment: delta design for feature-extend / refactor / deps"
 
+  # A refined packet escalates after 2 failed mechanical-tier attempts, the
+  # retry rule pipeline/SKILL.md gives the conductor. Before the mechanical
+  # rules, which would otherwise match first.
+  - when: { phase: [codegen, tests, docs], retry_count: { gte: 2 } }
+    use: gpt
+    reason: "Escalation: 2 mechanical-tier attempts failed"
+
   - when:
       phase: codegen
       task_type:
@@ -154,7 +173,8 @@ rules:
   - default: gpt
     reason: "Unrecognized task — fail safe to premium"
 
-# Hard per-run cost cap. When the accumulated cost_usd across telemetry
-# events for the current run exceeds this, the orchestrator aborts with
-# a clear message. Prevents runaway spend on an unexpectedly large repo.
+# Hard per-run cost cap. Once the dispatched cost in the run's
+# telemetry.jsonl plus the conductor's modeled cost reaches this, the
+# bridge refuses every further dispatch and run.mjs stops resuming.
+# Prevents runaway spend on an unexpectedly large repo.
 hard_cost_cap_usd: 50

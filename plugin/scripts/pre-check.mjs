@@ -171,7 +171,7 @@ function writeContractSmoke(sdlc) {
     mkdirSync(dir, { recursive: true });
     writeFileSync(file, `pre-check smoke @ ${new Date().toISOString()}\n`);
     if (!existsSync(file)) return { status: "fail", error: "File missing after write" };
-    return { status: "pass", path: file, note: "Wrote a file under .sdlc/pre-check/; write-contract auto-allowlists paths under .sdlc/." };
+    return { status: "pass", path: file, note: "Wrote a file under .sdlc/pre-check/. No write contract binds before Gate 0; a live one allows only its own run folder under .sdlc/." };
   } catch (e) {
     return {
       status: "fail",

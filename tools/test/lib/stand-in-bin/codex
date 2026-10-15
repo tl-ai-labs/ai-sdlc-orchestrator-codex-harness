@@ -1,0 +1,35 @@
+#!/bin/sh
+# Stand-in for the Codex CLI in the root tests. A real codex reads the login under CODEX_HOME and `mcp add` writes
+# $CODEX_HOME/config.toml, so this one answers only inside a CODEX_HOME a test marked, and never runs a model.
+if [ -z "$CODEX_HOME" ] || [ ! -f "$CODEX_HOME/.mmo-test-sandbox" ]; then
+  echo "codex stand-in: CODEX_HOME is not a test sandbox; refusing so the real ~/.codex is never written" >&2
+  exit 97
+fi
+printf '%s\n' "$*" >> "$CODEX_HOME/stand-in-calls.log"
+case "$1" in
+  --version|-V) echo "codex-cli 0.160.1 (stand-in for tests)" ;;
+  login)
+    if [ "$2" != status ]; then echo "codex stand-in: only 'login status' is answered" >&2; exit 1; fi
+    # codex 0.160.1 prints the login state on stderr.
+    if [ "${MMO_STAND_IN_LOGIN:-in}" = out ]; then echo "Not logged in" >&2; exit 1; fi
+    echo "Logged in using ChatGPT" >&2 ;;
+  mcp)
+    case "$2" in
+      get)
+        if ! grep -qxF "[mcp_servers.$3]" "$CODEX_HOME/config.toml" 2>/dev/null; then
+          echo "Error: No MCP server named '$3' found." >&2
+          exit 1
+        fi ;;
+      add)
+        name="$3"
+        shift 3
+        [ "$1" = "--" ] && shift
+        printf '[mcp_servers.%s]\ncommand = "%s"\n' "$name" "$1" >> "$CODEX_HOME/config.toml"
+        echo "Added global MCP server '$name'." ;;
+      list)
+        names=$(sed -n 's/^\[mcp_servers\.\(.*\)\]$/{"name":"\1"}/p' "$CODEX_HOME/config.toml" 2>/dev/null | paste -sd, -)
+        echo "[$names]" ;;
+      *) echo "codex stand-in: 'mcp $2' is not answered" >&2; exit 1 ;;
+    esac ;;
+  *) echo "codex stand-in: the tests never run a model" >&2; exit 1 ;;
+esac

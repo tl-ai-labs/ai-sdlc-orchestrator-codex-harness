@@ -7,10 +7,16 @@ Show or change the project's active model policy.
 
 Three shapes, one script (`plugin/scripts/setup-policy.mjs`) does all three.
 
+**Paths.** `<plugin-root>` in the commands below is this plugin's own folder. Codex gave you this
+skill's file path with the skill; it ends in `/skills/policy/SKILL.md`, and the plugin root is that
+path with the ending removed (two folders above this file). Put it in each command in place of
+`<plugin-root>` and keep the single quotes: the path can contain spaces. `"$(pwd)"` is the project
+the user is standing in.
+
 # Shape 1 — no argument: print the current policy
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --print-only --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --print-only --project-root "$(pwd)"
 ```
 
 This reads `.sdlc/project.json.default_policy` and prints the policy name (or an empty line if none
@@ -18,6 +24,11 @@ is set). Also read `.sdlc/project.json.last_updated_at` and include it in the me
 
 - If a policy is set: `Current policy: <name>   (set <last_updated_at>, change with $mmo-codex:policy change)`.
 - If no policy is set: `No policy set yet — run $mmo-codex:policy change to pick one.`
+- If the script also prints `setup-policy: runs in this project use <path> (policy '<name>') …` on
+  stderr, a `routing-policy.yaml` sits at the project root and every run here uses it instead of
+  `default_policy` and of any `--policy`. Say so on its own line, naming the file and its policy:
+  `Runs here use <path> (policy '<name>'), which overrides the default above.` Changing the default
+  changes nothing while that file exists.
 
 Do not open the browser here. Do not error. This shape is purely read.
 
@@ -29,7 +40,7 @@ opens the browser.
 ## 2a — Guard mid-run
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --guard-active-run --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --guard-active-run --project-root "$(pwd)"
 ```
 
 Parse the JSON. If `active: true`, print:
@@ -44,16 +55,21 @@ and STOP. Do not proceed to 2b.
 ## 2b — List available policies
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --list-json --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --list-json --project-root "$(pwd)"
 ```
 
 Parse the JSON — one entry per policy in `plugin/config/policies/`. Malformed YAMLs surface as
 `{ name, error }` and should still appear in the list (the user can skip past them).
 
-**Only offer the selectable ones.** Three policies are meant to be chosen here:
+**Offer the four shipped policies.** These are the policies this plugin ships, and each one runs
+on this harness:
 
 - **`gpt-plus-flash`** — the default and the one of record. Judgment work goes to the vendor API,
-  mechanical work to Gemini Flash. Every figure on the cost report is vendor-metered.
+  mechanical work to Gemini Flash. Every dispatched figure on the cost report is vendor-metered;
+  the conductor's own line is modeled from its token counts.
+- **`gpt-plus-flash-38`** — `gpt-plus-flash` with the mechanical tier on `gemini-3.8-flash`. Google
+  deprecated `gemini-3.7-flash` on 2026-10-08 and serves it from 3.8, so this policy names the model
+  that actually runs. Same credentials, same rates, vendor-metered.
 - **`gpt-seat-plus-flash`** — the same routing, but judgment work goes through the local
   `codex exec` binary on a ChatGPT subscription seat. No API key needed for that tier; the
   trade-off is that the seat reports token counts and no money, so its judgment cost is **modeled**
@@ -63,12 +79,12 @@ Parse the JSON — one entry per policy in `plugin/config/policies/`. Malformed 
   no API-key door — plus Python 3.10+. For exercising the agent door, or measuring what the
   mechanical tier does unaided.
 
-The `opus-*` files in the same directory are replay fixtures kept for comparison against the
-earlier harness. They are not selectable here and must not be offered.
+The Claude harness's `opus-*` policies do not ship with this plugin, and no run here dispatches to
+an Anthropic model. Do not offer them.
 
 ## 2c — Ask which policy
 
-Ask the user which policy they want as this project's default. Offer the three selectable policies
+Ask the user which policy they want as this project's default. Offer the four shipped policies
 above with their one-line summaries, plus a final `Author a new policy (opens browser)` option
 described as `Opens the local policy console to create a custom YAML.`.
 
@@ -81,7 +97,7 @@ fails downstream. The choices above cover every real path.
 - If the user picked `Author a new policy (opens browser)` → run:
 
   ```bash
-  node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --project-root '{{PROJECT_ROOT}}'
+  node '<plugin-root>/scripts/setup-policy.mjs' --project-root "$(pwd)"
   ```
 
   This starts the local policy console, opens the browser, and detects the save via `fs.watch`.
@@ -90,15 +106,17 @@ fails downstream. The choices above cover every real path.
 ## 2e — Credential check
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --check-creds --policy=<chosen> --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --check-creds --policy=<chosen> --project-root "$(pwd)"
 ```
 
-Parse the JSON.
+Parse the JSON. If it carries a `note`, print it verbatim before anything else: the project has a
+`routing-policy.yaml`, every run there uses that file whatever `default_policy` says, and its
+credentials are what was checked.
 
 - If `ok: true` → persist:
 
   ```bash
-  node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --policy=<chosen> --project-root '{{PROJECT_ROOT}}'
+  node '<plugin-root>/scripts/setup-policy.mjs' --policy=<chosen> --project-root "$(pwd)"
   ```
 
   Print `Policy set: <chosen>` and STOP.
@@ -127,23 +145,26 @@ Parse the JSON.
 # Shape 3 — `--policy=<name>`: silent set
 
 ```bash
-node '{{PLUGIN_ROOT}}/scripts/setup-policy.mjs' --policy=<name> --project-root '{{PROJECT_ROOT}}'
+node '<plugin-root>/scripts/setup-policy.mjs' --policy=<name> --project-root "$(pwd)"
 ```
 
 No browser. The script validates `<name>` against files in `plugin/config/policies/`, writes it to
 `.sdlc/project.json.default_policy`, and exits. It fails if `<name>` does not exist on disk — offer
-`$mmo-codex:policy change` to author it, or name the three selectable presets.
+`$mmo-codex:policy change` to author it, or name the four shipped presets.
 
 # Notes
 
 - The change is per-project. Once written to `.sdlc/project.json`, every subsequent
-  `$mmo-codex:greenfield` or `$mmo-codex:brownfield` in this folder uses the new policy. Prior runs'
-  `provenance.json` records the policy that was in effect at run time — those do not get rewritten.
+  `$mmo-codex:greenfield` or `$mmo-codex:brownfield` in this folder uses the new policy, unless a
+  `routing-policy.yaml` sits at the project root: while that file exists, every run uses it, for
+  routing, the driver pin and the cost cap alike. Earlier runs are not rewritten: each dispatch
+  row in a run's `telemetry.jsonl` names the policy it ran under (`routing.policy_name`).
 - To change the policy for a single ticket without touching the project's default:
   - **Interactive** (`$mmo-codex:brownfield`): type a different policy name at Gate 0's Policy bullet
     when reviewing the discovery summary. Accepted for that run only.
   - **Headless** (`$mmo-codex:pass`): pass `--policy=<name>`. Same one-run scope.
 
-  Neither path writes to `.sdlc/project.json`.
+  Neither path writes to `.sdlc/project.json`, and neither beats a `routing-policy.yaml` at the
+  project root.
 - The browser opens only when the user picks `Author a new policy` under `change` (or the same
   option during first-time `$mmo-codex:setup`). Picking a shipped preset stays in the terminal.

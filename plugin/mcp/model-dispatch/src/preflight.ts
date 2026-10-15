@@ -12,6 +12,8 @@
  * injected so the decision table is testable without any credentials.
  */
 
+import { effectivePricing, utcDay, type PricedModel } from "./prices.js";
+
 /**
  * Adapter the orchestrator runs in-session under `estimated` rather than
  * dispatching. Keyed by adapter name (a transport concept), not by tier.
@@ -114,4 +116,42 @@ export function assessModels(
   );
 
   return { models: results, ok: blocking.length === 0, halt_reason, warnings };
+}
+
+export interface PricingAssessment {
+  ok: boolean;
+  /** UTC day the models were priced for. */
+  priced_on: string;
+  unpriced: Array<{ id: string; model_name: string; reason: string }>;
+  halt_reason: string | null;
+  /** A policy block that differs from the list: the list is billed, the run is not blocked. */
+  price_warnings: string[];
+}
+
+/**
+ * Whether every model this run can reach has a price on `date`. Blocking in
+ * both auth modes: a dispatched model with no price is refused mid-run, and
+ * in-session work on it would leave a hole in the run's cost.
+ */
+export function assessPricing(models: PricedModel[], date: Date): PricingAssessment {
+  const unpriced: PricingAssessment["unpriced"] = [];
+  const warnings = new Set<string>();
+  for (const m of models) {
+    const r = effectivePricing(m, date);
+    for (const w of r.warnings) warnings.add(w);
+    if (r.unpriced) unpriced.push({ id: m.id ?? m.model_name, model_name: m.model_name, reason: r.reason });
+  }
+  const halt_reason =
+    unpriced.length === 0
+      ? null
+      : `Cannot price ${unpriced.length} of ${models.length} models in this policy: ` +
+        unpriced.map((u) => `${u.id} (${u.model_name}: ${u.reason})`).join("; ") +
+        ". Do not start the run — every dispatch to these models would be refused.";
+  return {
+    ok: unpriced.length === 0,
+    priced_on: utcDay(date) ?? date.toISOString().slice(0, 10),
+    unpriced,
+    halt_reason,
+    price_warnings: [...warnings],
+  };
 }

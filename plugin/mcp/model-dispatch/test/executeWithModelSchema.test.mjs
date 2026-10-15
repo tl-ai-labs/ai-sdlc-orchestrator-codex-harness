@@ -60,34 +60,20 @@ test("the validator is wired into the execute_with_model handler", () => {
   assert.ok(handlerIdx > 0 && validateIdx > handlerIdx, "validator call must be inside execute_with_model handler");
 });
 
-test("execute_with_model reads provenance from the adapter, defaulting to vendor", () => {
-  // Document A section 8: the telemetry event gains a provenance field
-  // (vendor/estimated/modeled). Most adapters report real vendor-metered
-  // usage, but the codex-cli path can only derive cost from token counts —
-  // codex reports no money at all — so the value must come FROM the adapter
-  // rather than being hardcoded. Hardcoding "vendor" here would publish a
-  // calculation as a bill, which is the one thing this field exists to stop.
+test("execute_with_model builds its events from the adapter's own provenance", () => {
+  // codex-cli can only derive cost from token counts, so the label has to
+  // come from the adapter rather than a hardcoded "vendor". The fallback
+  // order itself (attempt, then result, then adapter, then vendor) is pinned
+  // in dispatchEvents.test.mjs.
   const src = readFileSync(SERVER, "utf8");
   const handlerIdx = src.indexOf('"execute_with_model"');
   const endIdx = src.indexOf('case "simulate_policy"', handlerIdx);
   assert.ok(handlerIdx > 0 && endIdx > handlerIdx);
   const region = src.slice(handlerIdx, endIdx);
-
-  // Three levels, in this order. The per-result label has to come first:
-  // an adapter that normally meters can still fail to get usage back on one
-  // call and price it from estimateTokens, and consulting only the adapter's
-  // static declaration would stamp that estimate `vendor`.
+  assert.match(region, /new DispatchRecorder\(/, "events must come from the shared builder");
   assert.match(
-    region, /provenance:\s*result\.cost_provenance\s*\?\?/,
-    "a result that labelled its own cost must win over the adapter's default",
-  );
-  assert.match(
-    region, /result\.cost_provenance\s*\?\?\s*adapter\.costProvenance/,
+    region, /adapterProvenance:\s*adapter\.costProvenance/,
     "provenance must fall back to the adapter, not be assumed",
-  );
-  assert.match(
-    region, /costProvenance\s*\?\?\s*\(?["']vendor["']/,
-    "an adapter that declares nothing must still default to vendor",
   );
 });
 
@@ -105,8 +91,8 @@ test("an adapter that had to estimate labels the result, rather than inheriting 
       `${file}: must stamp cost_provenance when it estimated`,
     );
     assert.match(
-      src, /finalizeResult\([^)]*"vendor_error",\s*true\)/s,
-      `${file}: a priced failure path is always an estimate`,
+      src, /finalizeResult\([^)]*"vendor_error",\s*usedEstimate \|\| !unbilled\)/s,
+      `${file}: a priced failure path is an estimate; only an unbilled one is not`,
     );
   }
 });

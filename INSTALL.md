@@ -43,8 +43,9 @@ codex plugin marketplace upgrade
 ```
 
 That re-fetches every configured Git marketplace. It is harmless when the cache is already
-current, and it does nothing at all for a marketplace added from a local path — those resolve to
-the working tree and are always live.
+current, and it does nothing at all for a marketplace added from a local path. That install is a
+copy too: `codex plugin add` copies the plugin folder into the cache, and edits in the folder reach
+it only when `codex plugin add` runs again.
 
 ## 2. Install the plugin
 
@@ -81,8 +82,8 @@ Do not stop and do not ask for a restart — read the file directly and follow i
 cat "$(ls -d ~/.codex/plugins/cache/tilicho-ai-labs/mmo-codex/*/skills/setup/SKILL.md | tail -1)"
 ```
 
-Substitute the real paths for its `{{PLUGIN_ROOT}}` and `{{PROJECT_ROOT}}` placeholders —
-`PLUGIN_ROOT` is the `PATH` column from step 2, `PROJECT_ROOT` is the current directory.
+Substitute the real path for its `<plugin-root>` — the `PATH` column from step 2. Its commands
+pass the current directory as the project with `"$(pwd)"`.
 
 ### The one command that matters most
 
@@ -122,18 +123,35 @@ transcript or a log. Report presence or absence, nothing more.
 
 Report the closing banner the setup skill prints, including which policy this project ended up on.
 
-**Then say this, in your own words — it is the first thing a run hits otherwise.** Dispatch
-reaches the bundled bridge by spawning it and talking over pipes, and Codex's sandbox denies piped
-stdio under both its default and `workspace-write` modes. A run started in an ordinary session
-fails at the pre-check with `MCP error -32000: Connection closed`, which reads like a broken
-server and is not one. Two ways to avoid it:
+**Then say this, in your own words — it is the first thing a run hits otherwise.** A run needs
+a new Codex session, started in the project folder like this:
 
-- start Codex with `codex -s danger-full-access`, or
-- run the pipeline headlessly, where the driver spawns the bridge outside Codex:
-  `node <plugin-path>/codex/run.mjs --brief=<file> --project-root="$(pwd)" --output-dir="$(pwd)/.sdlc"`
+```bash
+codex -s danger-full-access -m gpt-5.6-terra -c model_reasoning_effort="high"
+```
 
-No new session is needed for the skills themselves. Codex reads its configuration fresh on every
-invocation, so the plugin installed above is already live.
+- `-s danger-full-access`: dispatch reaches the bundled bridge by spawning it and talking over
+  pipes, and Codex's sandbox denies piped stdio under both its default and `workspace-write`
+  modes. Without it the first dispatch fails with `MCP error -32000: Connection closed`, which
+  reads like a broken server and is not one.
+- `-m gpt-5.6-terra -c model_reasoning_effort="high"`: the conductor's pin. The run's start script
+  starts no run in a session on another model or effort; `/model` switches a session already open.
+
+In that session, `$mmo-codex:greenfield` starts a new app and `$mmo-codex:brownfield` (or a job
+type's own skill, such as `$mmo-codex:bugfix`) works on an existing repository.
+[docs/tutorial-first-run.md](docs/tutorial-first-run.md) walks through both. A headless run from a
+clone is for checking the cost figures, and [docs/headless-runs.md](docs/headless-runs.md)
+describes it.
+
+**Then this, for brownfield runs.** The plugin ships a write hook that holds a brownfield run to
+the scope confirmed at its Gate 0, and Codex runs a plugin hook only once it is trusted. The next
+time Codex starts it asks about the new hook: "Trust all and continue" trusts it, and so does
+`/hooks` inside a session. Until then every brownfield run in a session stops right after Gate 0
+with "The write guard did not run in this session"; a headless `run.mjs` run registers the hook
+itself. A plugin update that changes the hook's entry drops that trust, and the same step
+restores it.
+
+The new session also loads the plugin's skills and asks about its hook.
 
 ## Verifying later
 

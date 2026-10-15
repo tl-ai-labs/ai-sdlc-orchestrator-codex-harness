@@ -28,6 +28,7 @@ import { spawnSync } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { log } from "./lib/log.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 // ─── helpers ─────────────────────────────────────────────────────────
 
@@ -389,26 +390,29 @@ function scanGemini(envKeysInRepo, codeReferences) {
   };
 }
 
+/** The distribution the agent worker's requirements.txt pins. */
+const ANTIGRAVITY_DIST = "google-antigravity";
+
 function scanAntigravity(gcpAuthDetected) {
   // Antigravity reuses GCP auth; we only care whether the SDK package itself
   // is installed AND some GCP path is authenticated. Even that is best-effort
   // in v1 — actual entitlement check happens at preflight_dispatch.
   const sources = [];
 
-  const pipShow = spawnSync("pip", ["show", "google-antigravity-sdk"], { encoding: "utf8", timeout: 3000 });
+  const pipShow = spawnSync("pip", ["show", ANTIGRAVITY_DIST], { encoding: "utf8", timeout: 3000 });
   const pipDetected = pipShow.status === 0 && (pipShow.stdout ?? "").includes("Name:");
   sources.push({
-    location: "pip show google-antigravity-sdk",
+    location: `pip show ${ANTIGRAVITY_DIST}`,
     kind: "python-sdk",
     detected: pipDetected,
     note: pipDetected ? undefined : "SDK not installed (pip show returned non-zero).",
   });
 
-  const pip3Show = spawnSync("pip3", ["show", "google-antigravity-sdk"], { encoding: "utf8", timeout: 3000 });
+  const pip3Show = spawnSync("pip3", ["show", ANTIGRAVITY_DIST], { encoding: "utf8", timeout: 3000 });
   const pip3Detected = pip3Show.status === 0 && (pip3Show.stdout ?? "").includes("Name:");
   if (pip3Detected && !pipDetected) {
     sources.push({
-      location: "pip3 show google-antigravity-sdk",
+      location: `pip3 show ${ANTIGRAVITY_DIST}`,
       kind: "python-sdk",
       detected: true,
     });
@@ -498,16 +502,18 @@ function main() {
   process.stdout.write(JSON.stringify(out, null, 2) + "\n");
 }
 
-try {
-  main();
-} catch (e) {
-  // Fail-safe: emit an empty but well-formed report so the shepherd
-  // can still make progress. Never crash out — the user is waiting.
-  process.stdout.write(JSON.stringify({
-    schema_version: 1,
-    scanned_at: new Date().toISOString(),
-    error: e?.message ?? String(e),
-    providers: [],
-  }) + "\n");
-  process.exit(0);
+if (isMain(import.meta.url, process.argv[1])) {
+  try {
+    main();
+  } catch (e) {
+    // Fail-safe: emit an empty but well-formed report so the shepherd
+    // can still make progress. Never crash out — the user is waiting.
+    process.stdout.write(JSON.stringify({
+      schema_version: 1,
+      scanned_at: new Date().toISOString(),
+      error: e?.message ?? String(e),
+      providers: [],
+    }) + "\n");
+    process.exit(0);
+  }
 }
